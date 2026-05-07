@@ -202,6 +202,55 @@ def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
         sentinel.touch()
         print(f"    Extraction complete.")
 
+    def _eia860_plants_to_geoparquet(eia860_dir):
+        """Convert 2___Plant_Y*.xlsx → eia860_plants.parquet (GeoParquet)."""
+        import duckdb as _duckdb
+        from pathlib import Path as _P
+        # Find the plant file (name changes with year)
+        candidates = sorted(_P(eia860_dir).glob("2___Plant_Y*.xlsx"))
+        if not candidates:
+            print("  EIA 860: no Plant XLSX found, skipping GeoParquet conversion.")
+            return
+        plant_xlsx = candidates[-1]  # latest year if multiple
+        parquet_out = _P(eia860_dir).parent / "eia860_plants.parquet"
+        if parquet_out.exists():
+            print(f"  EIA 860 plants GeoParquet: already exists → {parquet_out}")
+            return
+        xlsx_path = str(plant_xlsx).replace("\\", "/")
+        out_path = str(parquet_out).replace("\\", "/")
+        print(f"  Converting {plant_xlsx.name} → {parquet_out.name}")
+        conn = _duckdb.connect()
+        try:
+            conn.execute("INSTALL spatial; LOAD spatial;")
+            conn.execute(f"""
+                COPY (
+                    SELECT
+                        * EXCLUDE ("Latitude", "Longitude"),
+                        CASE
+                            WHEN TRY_CAST("Latitude" AS DOUBLE) IS NOT NULL
+                             AND TRY_CAST("Longitude" AS DOUBLE) IS NOT NULL
+                            THEN ST_Point(
+                                TRY_CAST("Longitude" AS DOUBLE),
+                                TRY_CAST("Latitude"  AS DOUBLE)
+                            )
+                            ELSE NULL
+                        END AS geometry
+                    FROM read_xlsx(
+                        '{xlsx_path}',
+                        sheet='Plant',
+                        range='A2:AP10000',
+                        header=true,
+                        all_varchar=true
+                    )
+                    WHERE "Plant Code" IS NOT NULL AND "Plant Code" != ''
+                ) TO '{out_path}' (FORMAT PARQUET)
+            """)
+            count = conn.execute(f"SELECT COUNT(*) FROM '{out_path}'").fetchone()[0]
+            print(f"  EIA 860 plants: {count:,} rows → {parquet_out.name} "
+                  f"({parquet_out.stat().st_size / 1_048_576:.1f} MB)")
+        finally:
+            conn.close()
+
     def _ingest_eia():
         from pathlib import Path as _P
         bronze_eia = _P(cfg.storage.bronze_path) / "eia"
@@ -231,6 +280,8 @@ def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
                 _extract_zip(dest, extract_dir)
             except zipfile.BadZipFile:
                 print(f"  ERROR: {name} on disk is corrupt — delete it and re-run to re-download.")
+        # Convert EIA 860 plant file to GeoParquet
+        _eia860_plants_to_geoparquet(bronze_eia / "eia860")
 
     if flow_params.run_eia:
         print("[EIA] Starting Form 860/923 download + extraction")
