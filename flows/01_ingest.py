@@ -243,40 +243,62 @@ def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
 
 
 @app.cell
-def _(cfg, flow_params, httpx, mo, tqdm):
+def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
     def _ingest_epa():
         from pathlib import Path as _P
         bronze_epa = _P(cfg.storage.bronze_path) / "epa"
         bronze_epa.mkdir(parents=True, exist_ok=True)
-        dest = bronze_epa / "frs_national_combined.zip"
-        if dest.exists():
-            print("  EPA FRS: already downloaded, skipping")
-            return
+        dest = bronze_epa / "frs_national_single.zip"
+        extract_dir = bronze_epa / "frs_national"
+        sentinel = extract_dir / ".extracted"
         url = cfg.epa.frs_zip_url
+
+        # Download
+        if not dest.exists():
+            try:
+                print(f"  Downloading EPA FRS national_single from {url}")
+                with httpx.stream("GET", url, follow_redirects=True, timeout=300) as r:
+                    r.raise_for_status()
+                    total = int(r.headers.get("content-length", 0))
+                    with open(dest, "wb") as f, tqdm(
+                        total=total, unit="B", unit_scale=True, desc="frs_national_single.zip", leave=False
+                    ) as bar:
+                        for chunk in r.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+                            bar.update(len(chunk))
+                print(f"  EPA FRS: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB)")
+            except httpx.HTTPStatusError as e:
+                dest.unlink(missing_ok=True)
+                print(f"  ERROR: EPA FRS download failed (HTTP {e.response.status_code}). "
+                      f"Update epa.frs_zip_url in config.lifeline.yaml.")
+                return
+            except Exception as e:
+                dest.unlink(missing_ok=True)
+                print(f"  WARNING: Failed to download EPA FRS: {e}")
+                return
+        else:
+            print("  EPA FRS: already downloaded, skipping download")
+
+        # Extract
+        if sentinel.exists():
+            print(f"  EPA FRS: already extracted → {extract_dir}")
+            return
         try:
-            print(f"  Downloading EPA FRS from {url}")
-            with httpx.stream("GET", url, follow_redirects=True, timeout=300) as r:
-                r.raise_for_status()
-                total = int(r.headers.get("content-length", 0))
-                with open(dest, "wb") as f, tqdm(
-                    total=total, unit="B", unit_scale=True, desc="frs_national_combined.zip", leave=False
-                ) as bar:
-                    for chunk in r.iter_bytes(chunk_size=65536):
-                        f.write(chunk)
-                        bar.update(len(chunk))
-            print(f"  EPA FRS: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB)")
-        except httpx.HTTPStatusError as e:
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(dest) as z:
+                members = z.namelist()
+                print(f"  Extracting {len(members)} files → {extract_dir}")
+                z.extractall(extract_dir)
+            sentinel.touch()
+            print("  EPA FRS extraction complete.")
+        except zipfile.BadZipFile:
             dest.unlink(missing_ok=True)
-            print(f"  ERROR: EPA FRS download failed ({e.response.status_code}). "
-                  f"Update epa.frs_zip_url in config.lifeline.yaml.")
-        except Exception as e:
-            dest.unlink(missing_ok=True)
-            print(f"  WARNING: Failed to download EPA FRS: {e}")
+            print(f"  ERROR: frs_national_single.zip is corrupt — deleted, re-run to re-download.")
 
     if flow_params.run_epa:
-        print("[EPA] Starting FRS download")
+        print("[EPA] Starting FRS download + extraction")
         _ingest_epa()
-        epa_result = mo.callout(mo.md("✅ **EPA download complete.**"), kind="success")
+        epa_result = mo.callout(mo.md("✅ **EPA FRS download + extraction complete.**"), kind="success")
     else:
         epa_result = mo.callout(mo.md("⏭ EPA download skipped."), kind="neutral")
     epa_result

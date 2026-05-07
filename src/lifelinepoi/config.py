@@ -51,8 +51,8 @@ class EIAConfig:
 
 @dataclass
 class EPAConfig:
-    # EPA Facility Registry Service national combined CSV zip
-    frs_zip_url: str = "https://edap.epa.gov/data/Public/FRS/FRS_National_Combine.zip"
+    # EPA Facility Registry Service national single-file CSV zip
+    frs_zip_url: str = "https://ordsext.epa.gov/FLA/www3/state_files/national_single.zip"
 
 
 @dataclass
