@@ -1,0 +1,49 @@
+# LifelinePOI Configuration
+# Edit osm.pbf_path to point to your local OSM PBF extract.
+# Download regional extracts from: https://download.geofabrik.de/
+
+osm:
+  pbf_path: "E:\\lifelinepois\\input\\central-america-260506.osm.pbf"   # REQUIRED: path to your local OSM PBF file
+  osmium_index_type: "flex_mem"           # Options: flex_mem (default), dense_file_array (planet builds)
+  layers:
+    - power
+    - water_infrastructure
+    - telecom
+    - fuel
+
+duckdb:
+  memory_limit: "16GB"                    # Increase for larger PBF files
+
+storage:
+  root: "E:/lifelinepois/data"    # all sub-paths below are relative to root
+  bronze_path: "bronze"
+  silver_path: "silver"
+  gold_path: "gold"
+  tiles_path: "tiles"
+
+eia:
+  # Direct zip download URLs — update the year when new data is published
+  form860_zip_url: "https://www.eia.gov/electricity/data/eia860/archive/xls/eia8602023.zip"
+  form923_zip_url: "https://www.eia.gov/electricity/data/eia923/archive/xls/f923_2023.zip"
+
+epa:
+  # EPA Facility Registry Service — national combined CSV zip
+  frs_zip_url: "https://edap.epa.gov/data/Public/FRS/FRS_National_Combine.zip"
+
+conflation:
+  name_similarity_threshold: 0.85     # rapidfuzz score (0-1) for name matching
+  spatial_proximity_meters: 50.0      # BallTree distance threshold for matching
+  confidence_weights:
+    distance: 0.40
+    attributes: 0.40
+    source: 0.20
+
+tiles:
+  min_zoom: 4
+  max_zoom: 14
+  layer_name: "lifeline_poi"
+
+aoi:
+  # Optional bounding box to clip output (leave null for full extent)
+  # Format: [min_lon, min_lat, max_lon, max_lat]
+  bbox: null

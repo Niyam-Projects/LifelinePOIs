@@ -1,12 +1,13 @@
 import marimo
 
-__generated_with = "0.10.0"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 
 @app.cell(hide_code=True)
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -39,7 +40,16 @@ def _():
     from src.lifelinepoi.config import LifelineConfig
     from lib.duckdb_utils import get_connection, run_layer_sql
 
-    return BaseModel, Field, LifelineConfig, Path, get_connection, httpx, run_layer_sql, time, tqdm, zipfile
+    return (
+        BaseModel,
+        Field,
+        LifelineConfig,
+        get_connection,
+        httpx,
+        run_layer_sql,
+        tqdm,
+        zipfile,
+    )
 
 
 @app.cell
@@ -55,7 +65,7 @@ def _(BaseModel, Field):
 
 
 @app.cell
-def _(FlowParams, mo):
+def _(mo):
     params_form = (
         mo.md("""
         ## Parameters
@@ -116,7 +126,7 @@ def _(LifelineConfig, flow_params, mo):
 
 
 @app.cell
-def _(cfg, flow_params, get_connection, mo, run_layer_sql, time):
+def _(cfg, flow_params, get_connection, mo, run_layer_sql):
     def _ingest_osm(layers=None):
         from pathlib import Path as _P
         import time as _t
@@ -161,10 +171,7 @@ def _(cfg, flow_params, get_connection, mo, run_layer_sql, time):
 
 
 @app.cell
-def _(cfg, flow_params, httpx, mo, osm_result, tqdm, zipfile):
-    _EIA_860_URL = "https://www.eia.gov/electricity/data/eia860/xls/eia8602023.zip"
-    _EIA_923_URL = "https://www.eia.gov/electricity/data/eia923/xls/f923_2023.zip"
-
+def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
     def _download_file(url, dest, label):
         from pathlib import Path as _P
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -184,16 +191,24 @@ def _(cfg, flow_params, httpx, mo, osm_result, tqdm, zipfile):
         from pathlib import Path as _P
         bronze_eia = _P(cfg.storage.bronze_path) / "eia"
         bronze_eia.mkdir(parents=True, exist_ok=True)
-        for url, name in [(_EIA_860_URL, "eia860_2023.zip"), (_EIA_923_URL, "eia923_2023.zip")]:
+        urls = [
+            (cfg.eia.form860_zip_url, "eia860_2023.zip"),
+            (cfg.eia.form923_zip_url, "eia923_2023.zip"),
+        ]
+        for url, name in urls:
             dest = bronze_eia / name
             if dest.exists():
                 print(f"  EIA {name}: already downloaded, skipping")
                 continue
             try:
                 _download_file(url, dest, name)
-                print(f"  EIA {name}: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB)")
                 with zipfile.ZipFile(dest) as z:
-                    print(f"    Contains: {z.namelist()[:3]} ...")
+                    print(f"  EIA {name}: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB), "
+                          f"contains: {z.namelist()[:3]} ...")
+            except zipfile.BadZipFile:
+                dest.unlink(missing_ok=True)
+                print(f"  ERROR: {name} downloaded but is not a valid zip. "
+                      f"Check eia.form860_zip_url / eia.form923_zip_url in config.")
             except Exception as e:
                 print(f"  WARNING: Failed to download {name}: {e}")
 
@@ -208,9 +223,7 @@ def _(cfg, flow_params, httpx, mo, osm_result, tqdm, zipfile):
 
 
 @app.cell
-def _(cfg, eia_result, flow_params, httpx, mo, tqdm):
-    _EPA_FRS_CSV_URL = "https://www.epa.gov/system/files/other-files/2022-08/national_combined_csv.zip"
-
+def _(cfg, flow_params, httpx, mo, tqdm):
     def _ingest_epa():
         from pathlib import Path as _P
         bronze_epa = _P(cfg.storage.bronze_path) / "epa"
@@ -219,21 +232,26 @@ def _(cfg, eia_result, flow_params, httpx, mo, tqdm):
         if dest.exists():
             print("  EPA FRS: already downloaded, skipping")
             return
+        url = cfg.epa.frs_zip_url
         try:
-            print("  Downloading epa_frs_national.zip")
-            with httpx.stream("GET", _EPA_FRS_CSV_URL, follow_redirects=True, timeout=120) as r:
+            print(f"  Downloading EPA FRS from {url}")
+            with httpx.stream("GET", url, follow_redirects=True, timeout=300) as r:
                 r.raise_for_status()
                 total = int(r.headers.get("content-length", 0))
                 with open(dest, "wb") as f, tqdm(
-                    total=total, unit="B", unit_scale=True, desc="epa_frs_national.zip", leave=False
+                    total=total, unit="B", unit_scale=True, desc="frs_national_combined.zip", leave=False
                 ) as bar:
                     for chunk in r.iter_bytes(chunk_size=65536):
                         f.write(chunk)
                         bar.update(len(chunk))
             print(f"  EPA FRS: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB)")
+        except httpx.HTTPStatusError as e:
+            dest.unlink(missing_ok=True)
+            print(f"  ERROR: EPA FRS download failed ({e.response.status_code}). "
+                  f"Update epa.frs_zip_url in config.lifeline.yaml.")
         except Exception as e:
+            dest.unlink(missing_ok=True)
             print(f"  WARNING: Failed to download EPA FRS: {e}")
-            print("  Set epa.frs_url in config.lifeline.yaml to override")
 
     if flow_params.run_epa:
         print("[EPA] Starting FRS download")
