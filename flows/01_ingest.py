@@ -245,15 +245,17 @@ def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
 @app.cell
 def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
     def _ingest_epa():
+        import duckdb as _duckdb
         from pathlib import Path as _P
         bronze_epa = _P(cfg.storage.bronze_path) / "epa"
         bronze_epa.mkdir(parents=True, exist_ok=True)
         dest = bronze_epa / "frs_national_single.zip"
         extract_dir = bronze_epa / "frs_national"
-        sentinel = extract_dir / ".extracted"
+        extract_sentinel = extract_dir / ".extracted"
+        parquet_out = bronze_epa / "frs_national.parquet"
         url = cfg.epa.frs_zip_url
 
-        # Download
+        # --- Download ---
         if not dest.exists():
             try:
                 print(f"  Downloading EPA FRS national_single from {url}")
@@ -279,26 +281,68 @@ def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
         else:
             print("  EPA FRS: already downloaded, skipping download")
 
-        # Extract
-        if sentinel.exists():
+        # --- Extract CSV ---
+        if not extract_sentinel.exists():
+            try:
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(dest) as z:
+                    members = z.namelist()
+                    print(f"  Extracting {len(members)} files → {extract_dir}")
+                    z.extractall(extract_dir)
+                extract_sentinel.touch()
+                print("  EPA FRS extraction complete.")
+            except zipfile.BadZipFile:
+                dest.unlink(missing_ok=True)
+                print("  ERROR: frs_national_single.zip is corrupt — deleted, re-run to re-download.")
+                return
+        else:
             print(f"  EPA FRS: already extracted → {extract_dir}")
+
+        # --- Convert to GeoParquet ---
+        if parquet_out.exists():
+            print(f"  EPA FRS GeoParquet: already exists → {parquet_out}")
             return
+        csv_files = sorted(extract_dir.glob("*.csv")) + sorted(extract_dir.glob("*.CSV"))
+        if not csv_files:
+            print("  WARNING: No CSV files found in extract dir, skipping GeoParquet conversion.")
+            return
+        csv_list = "[" + ", ".join(f"'{str(p).replace(chr(92), '/')}'" for p in csv_files) + "]"
+        print(f"  Converting {len(csv_files)} CSV(s) to GeoParquet → {parquet_out}")
+        conn = _duckdb.connect()
         try:
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(dest) as z:
-                members = z.namelist()
-                print(f"  Extracting {len(members)} files → {extract_dir}")
-                z.extractall(extract_dir)
-            sentinel.touch()
-            print("  EPA FRS extraction complete.")
-        except zipfile.BadZipFile:
-            dest.unlink(missing_ok=True)
-            print(f"  ERROR: frs_national_single.zip is corrupt — deleted, re-run to re-download.")
+            conn.execute("INSTALL spatial; LOAD spatial;")
+            conn.execute(f"""
+                COPY (
+                    SELECT
+                        * EXCLUDE (LATITUDE83, LONGITUDE83),
+                        CASE
+                            WHEN LATITUDE83 IS NOT NULL AND LONGITUDE83 IS NOT NULL
+                            THEN ST_Transform(
+                                ST_Point(LONGITUDE83, LATITUDE83),
+                                'EPSG:4269', 'EPSG:4326'
+                            )
+                            ELSE NULL
+                        END AS geometry
+                    FROM read_csv(
+                        {csv_list},
+                        header=True,
+                        union_by_name=True,
+                        dateformat='%d-%b-%y',
+                        ignore_errors=True
+                    )
+                ) TO '{str(parquet_out).replace(chr(92), '/')}' (FORMAT PARQUET)
+            """)
+            row_count = conn.execute(
+                f"SELECT COUNT(*) FROM '{str(parquet_out).replace(chr(92), '/')}'"
+            ).fetchone()[0]
+            print(f"  EPA FRS GeoParquet: {row_count:,} rows written ({parquet_out.stat().st_size / 1_048_576:.1f} MB)")
+        finally:
+            conn.close()
 
     if flow_params.run_epa:
-        print("[EPA] Starting FRS download + extraction")
+        print("[EPA] Starting FRS download + extraction + GeoParquet conversion")
         _ingest_epa()
-        epa_result = mo.callout(mo.md("✅ **EPA FRS download + extraction complete.**"), kind="success")
+        epa_result = mo.callout(mo.md("✅ **EPA FRS → GeoParquet complete.**"), kind="success")
     else:
         epa_result = mo.callout(mo.md("⏭ EPA download skipped."), kind="neutral")
     epa_result
