@@ -187,35 +187,55 @@ def _(cfg, flow_params, httpx, mo, tqdm, zipfile):
                     bar.update(len(chunk))
         return dest
 
+    def _extract_zip(zip_path, extract_dir):
+        """Extract zip to extract_dir, skip if sentinel file already present."""
+        from pathlib import Path as _P
+        sentinel = extract_dir / ".extracted"
+        if sentinel.exists():
+            print(f"    Already extracted → {extract_dir}")
+            return
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as z:
+            members = z.namelist()
+            print(f"    Extracting {len(members)} files → {extract_dir}")
+            z.extractall(extract_dir)
+        sentinel.touch()
+        print(f"    Extraction complete.")
+
     def _ingest_eia():
         from pathlib import Path as _P
         bronze_eia = _P(cfg.storage.bronze_path) / "eia"
         bronze_eia.mkdir(parents=True, exist_ok=True)
-        urls = [
-            (cfg.eia.form860_zip_url, "eia860_2023.zip"),
-            (cfg.eia.form923_zip_url, "eia923_2023.zip"),
+        products = [
+            (cfg.eia.form860_zip_url, "eia860_2023.zip", bronze_eia / "eia860"),
+            (cfg.eia.form923_zip_url, "eia923_2023.zip", bronze_eia / "eia923"),
         ]
-        for url, name in urls:
+        for url, name, extract_dir in products:
             dest = bronze_eia / name
-            if dest.exists():
-                print(f"  EIA {name}: already downloaded, skipping")
-                continue
+            # Download if not already on disk
+            if not dest.exists():
+                try:
+                    _download_file(url, dest, name)
+                    print(f"  EIA {name}: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB)")
+                except zipfile.BadZipFile:
+                    dest.unlink(missing_ok=True)
+                    print(f"  ERROR: {name} is not a valid zip — check eia.*_zip_url in config.")
+                    continue
+                except Exception as e:
+                    print(f"  WARNING: Failed to download {name}: {e}")
+                    continue
+            else:
+                print(f"  EIA {name}: already downloaded, skipping download")
+            # Extract
             try:
-                _download_file(url, dest, name)
-                with zipfile.ZipFile(dest) as z:
-                    print(f"  EIA {name}: downloaded ({dest.stat().st_size / 1_048_576:.1f} MB), "
-                          f"contains: {z.namelist()[:3]} ...")
+                _extract_zip(dest, extract_dir)
             except zipfile.BadZipFile:
-                dest.unlink(missing_ok=True)
-                print(f"  ERROR: {name} downloaded but is not a valid zip. "
-                      f"Check eia.form860_zip_url / eia.form923_zip_url in config.")
-            except Exception as e:
-                print(f"  WARNING: Failed to download {name}: {e}")
+                print(f"  ERROR: {name} on disk is corrupt — delete it and re-run to re-download.")
 
     if flow_params.run_eia:
-        print("[EIA] Starting Form 860/923 download")
+        print("[EIA] Starting Form 860/923 download + extraction")
         _ingest_eia()
-        eia_result = mo.callout(mo.md("✅ **EIA download complete.**"), kind="success")
+        eia_result = mo.callout(mo.md("✅ **EIA download + extraction complete.**"), kind="success")
     else:
         eia_result = mo.callout(mo.md("⏭ EIA download skipped."), kind="neutral")
     eia_result
