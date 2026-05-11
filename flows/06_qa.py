@@ -47,7 +47,6 @@ def _(BaseModel, Field):
     class FlowParams(BaseModel):
         config_path: str = Field(default="config.lifeline.yaml", description="Path to config YAML file")
         layer_filter: str = Field(default="", description="Filter to a single OSM layer (empty = all)")
-        hifld_snapshot_path: str = Field(default="", description="Previous HIFLD gold folder for change detection (empty = skip)")
 
     return (FlowParams,)
 
@@ -61,13 +60,10 @@ def _(mo):
         Config file: {config_path}
 
         Layer filter (blank = all layers): {layer_filter}
-
-        Previous HIFLD snapshot path (blank = skip comparison): {hifld_snapshot_path}
         """)
         .batch(
             config_path=mo.ui.text(value="config.lifeline.yaml", label="Config path"),
             layer_filter=mo.ui.text(value="", placeholder="e.g. power", label=""),
-            hifld_snapshot_path=mo.ui.text(value="", placeholder="e.g. E:/lifelinepois/data/gold_snapshot", label=""),
         )
         .form(submit_button_label="▶ Load Data")
     )
@@ -173,7 +169,7 @@ def _(alt, master, mo):
         .properties(title="Confidence Tier by Layer", width=400, height=300)
     )
 
-    mo.hstack([mo.altair_chart(score_hist), mo.altair_chart(tier_bar)])
+    mo.hstack([score_hist, tier_bar])
     return
 
 
@@ -227,7 +223,7 @@ def _(alt, master, mo):
             "Provenance values: `osm` · `osm+hifld` · `osm+epa_naics` · `osm+hifld+epa_naics` · "
             "`epa_frs` · `epa_frs+overture_geocode`"
         ),
-        mo.altair_chart(prov_bar),
+        prov_bar,
         mo.ui.table(_prov_df),
     ])
     return
@@ -278,7 +274,7 @@ def _(alt, master, mo):
 
     mo.vstack([
         mo.md("### FEMA Taxonomy Coverage"),
-        mo.altair_chart(fema_bar),
+        fema_bar,
         mo.ui.table(_fema_pivot),
     ])
     return
@@ -502,138 +498,117 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
 
 
 @app.cell
-def _(Path, flow_params, gpd, hifld_gdfs, mo, pd):
-    _snap_path_str = flow_params.hifld_snapshot_path.strip()
-    if not _snap_path_str or not hifld_gdfs:
+def _(Path, cfg, hifld_gdfs, mo, pd):
+    """Compare HIFLD bronze source vs gold output to QA coverage and OSM match rates."""
+    import uuid as _uuid
+
+    _bronze_hifld = Path(cfg.storage.bronze_path) / "hifld"
+
+    if not _bronze_hifld.exists() or not hifld_gdfs:
         _snap_display = mo.vstack([
-            mo.md("### HIFLD Snapshot Comparison"),
+            mo.md("### HIFLD Source vs Gold Comparison"),
             mo.callout(
-                mo.md(
-                    "No snapshot path provided. Fill in **Previous HIFLD snapshot path** above "
-                    "to compare current gold against a prior run."
-                ),
+                mo.md("Bronze HIFLD not found or no gold layers loaded. Run Flow 01 and Flow 04 first."),
                 kind="neutral",
             ),
         ])
     else:
-        _snap_path = Path(_snap_path_str)
-        if not _snap_path.exists():
-            _snap_display = mo.vstack([
-                mo.md("### HIFLD Snapshot Comparison"),
-                mo.callout(mo.md(f"⚠️ Snapshot path not found: `{_snap_path}`"), kind="warn"),
-            ])
-        else:
-            _NATIVE_COMPARE_FIELDS = ["display_name"]
-            _OSM_LINK_FIELDS = ["osm_lifeline_id", "source_provenance", "confidence_score"]
+        _HIFLD_NS = _uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
-            _diff_rows = []
-            _add_tables: dict[str, pd.DataFrame] = {}
-            _del_tables: dict[str, pd.DataFrame] = {}
-            _upd_native_tables: dict[str, pd.DataFrame] = {}
-            _upd_osm_tables: dict[str, pd.DataFrame] = {}
+        _cov_rows = []
+        _dropped_tables: dict[str, pd.DataFrame] = {}
+        _osm_new_tables: dict[str, pd.DataFrame] = {}
 
-            for _lname, _curr_gdf in hifld_gdfs.items():
-                _snap_file = _snap_path / f"hifld_{_lname}.parquet"
-                if not _snap_file.exists():
-                    _diff_rows.append({"hifld_layer": _lname, "status": "snapshot missing",
-                                       "adds": None, "deletes": None,
-                                       "native_updates": None, "osm_link_changes": None})
-                    continue
+        for _lname, _gold_gdf in hifld_gdfs.items():
+            _bronze_file = _bronze_hifld / f"{_lname}.parquet"
+            _layer_def = cfg.hifld.layers.get(_lname)
+            if not _bronze_file.exists() or _layer_def is None:
+                _cov_rows.append({"hifld_layer": _lname, "bronze_count": None,
+                                   "gold_count": len(_gold_gdf), "dropped": None,
+                                   "osm_matched": None, "osm_match_pct": None})
+                continue
 
-                try:
-                    _prev_gdf = gpd.read_parquet(_snap_file)
-                except Exception as _e:
-                    _diff_rows.append({"hifld_layer": _lname, "status": f"error: {_e}",
-                                       "adds": None, "deletes": None,
-                                       "native_updates": None, "osm_link_changes": None})
-                    continue
+            try:
+                _bronze_df = pd.read_parquet(_bronze_file)
+            except Exception:
+                _cov_rows.append({"hifld_layer": _lname, "bronze_count": "error",
+                                   "gold_count": len(_gold_gdf), "dropped": None,
+                                   "osm_matched": None, "osm_match_pct": None})
+                continue
 
-                _curr_ids = set(_curr_gdf["lifeline_id"].dropna())
-                _prev_ids = set(_prev_gdf["lifeline_id"].dropna())
-                _adds = _curr_ids - _prev_ids
-                _deletes = _prev_ids - _curr_ids
-                _common = _curr_ids & _prev_ids
+            _bronze_n = len(_bronze_df)
+            _gold_n = len(_gold_gdf)
+            _dropped_n = _bronze_n - _gold_n  # records lost due to invalid coords
 
-                _curr_idx = _curr_gdf.set_index("lifeline_id")
-                _prev_idx = _prev_gdf.set_index("lifeline_id")
+            _osm_matched = int(_gold_gdf["osm_lifeline_id"].notna().sum()) if "osm_lifeline_id" in _gold_gdf.columns else 0
+            _match_pct = round(100 * _osm_matched / _gold_n, 1) if _gold_n > 0 else 0.0
 
-                _native_changed = []
-                _osm_changed = []
-                for _lid in _common:
-                    _c_row = _curr_idx.loc[_lid]
-                    _p_row = _prev_idx.loc[_lid]
-                    _nd = {}
-                    for _field in _NATIVE_COMPARE_FIELDS:
-                        if _field in _c_row.index and _field in _p_row.index:
-                            if str(_c_row[_field]) != str(_p_row[_field]):
-                                _nd[f"{_field}_prev"] = _p_row[_field]
-                                _nd[f"{_field}_curr"] = _c_row[_field]
-                    if _nd:
-                        _nd["lifeline_id"] = _lid
-                        _native_changed.append(_nd)
+            # Identify which bronze records were dropped (present in bronze, missing from gold)
+            _id_field = _layer_def.id_field
+            if _id_field in _bronze_df.columns and "lifeline_id" in _gold_gdf.columns:
+                _expected_ids = {
+                    str(_uuid.uuid5(_HIFLD_NS, f"hifld/{_lname}/{v}"))
+                    for v in _bronze_df[_id_field].dropna().astype(str)
+                }
+                _gold_ids = set(_gold_gdf["lifeline_id"].dropna())
+                _missing_ids = _expected_ids - _gold_ids
+                if _missing_ids:
+                    # Map back to bronze rows (approximate: match via re-deriving id)
+                    _bronze_df["_expected_lifeline_id"] = _bronze_df[_id_field].apply(
+                        lambda v: str(_uuid.uuid5(_HIFLD_NS, f"hifld/{_lname}/{v}")) if pd.notna(v) else None
+                    )
+                    _dropped_rows = _bronze_df[_bronze_df["_expected_lifeline_id"].isin(_missing_ids)]
+                    _show_cols = [
+                        c for c in [_id_field] + [
+                            col for col in _bronze_df.columns
+                            if col not in ("geometry", "_expected_lifeline_id", "bbox", "bpd_metadata", "type", "properties")
+                        ][:6]
+                        if c in _bronze_df.columns
+                    ]
+                    _dropped_tables[_lname] = _dropped_rows[_show_cols].head(100).reset_index(drop=True)
 
-                    _od = {}
-                    for _field in _OSM_LINK_FIELDS:
-                        if _field in _c_row.index and _field in _p_row.index:
-                            if str(_c_row[_field]) != str(_p_row[_field]):
-                                _od[f"{_field}_prev"] = _p_row[_field]
-                                _od[f"{_field}_curr"] = _c_row[_field]
-                    if _od:
-                        _od["lifeline_id"] = _lid
-                        _osm_changed.append(_od)
+            # OSM-matched gold records (new matches since last look at source)
+            if "osm_lifeline_id" in _gold_gdf.columns:
+                _osm_new = _gold_gdf[_gold_gdf["osm_lifeline_id"].notna()][
+                    [c for c in ["lifeline_id", "display_name", "osm_lifeline_id", "source_provenance", "confidence_score"]
+                     if c in _gold_gdf.columns]
+                ].head(100).reset_index(drop=True)
+                if len(_osm_new) > 0:
+                    _osm_new_tables[_lname] = _osm_new
 
-                _geom_changed = 0
-                if "geometry" in _curr_gdf.columns and "geometry" in _prev_gdf.columns:
-                    for _lid in _common:
-                        _cg = _curr_idx.loc[_lid, "geometry"]
-                        _pg = _prev_idx.loc[_lid, "geometry"]
-                        if _cg is not None and _pg is not None and not _cg.equals(_pg):
-                            _geom_changed += 1
+            _cov_rows.append({
+                "hifld_layer": _lname,
+                "bronze_count": _bronze_n,
+                "gold_count": _gold_n,
+                "dropped_invalid_coords": _dropped_n,
+                "osm_matched": _osm_matched,
+                "osm_match_pct": _match_pct,
+            })
 
-                if _native_changed:
-                    _upd_native_tables[_lname] = pd.DataFrame(_native_changed)
-                if _osm_changed:
-                    _upd_osm_tables[_lname] = pd.DataFrame(_osm_changed)
-                if _adds:
-                    _add_tables[_lname] = _curr_gdf[_curr_gdf["lifeline_id"].isin(_adds)][
-                        [c for c in ["lifeline_id", "display_name", "confidence_score", "source_provenance"] if c in _curr_gdf.columns]
-                    ].reset_index(drop=True)
-                if _deletes:
-                    _del_tables[_lname] = _prev_gdf[_prev_gdf["lifeline_id"].isin(_deletes)][
-                        [c for c in ["lifeline_id", "display_name", "confidence_score", "source_provenance"] if c in _prev_gdf.columns]
-                    ].reset_index(drop=True)
+        _cov_df = pd.DataFrame(_cov_rows)
+        _detail_widgets = [
+            mo.md("### HIFLD Source vs Gold Comparison"),
+            mo.md(
+                "Compares raw bronze HIFLD source (`bronze/hifld/`) against generated gold layers (`gold/hifld_*.parquet`).  \n"
+                "**Dropped** = bronze records excluded from gold due to missing/invalid coordinates.  \n"
+                "**OSM matched** = gold records linked to an OSM silver point within the proximity threshold."
+            ),
+            mo.ui.table(_cov_df),
+        ]
 
-                _diff_rows.append({
-                    "hifld_layer": _lname, "status": "compared",
-                    "current_rows": len(_curr_gdf), "snapshot_rows": len(_prev_gdf),
-                    "adds": len(_adds), "deletes": len(_deletes),
-                    "native_updates": len(_native_changed),
-                    "geom_changes": _geom_changed,
-                    "osm_link_changes": len(_osm_changed),
-                })
-
-            _diff_df = pd.DataFrame(_diff_rows)
-            _detail_widgets = [
-                mo.md("### HIFLD Snapshot Comparison"),
-                mo.md(
-                    "**Native updates** = authoritative field changes (display name, etc.)  \n"
-                    "**OSM-link changes** = `osm_lifeline_id` / `source_provenance` / `confidence_score` "
-                    "changes driven by OSM pipeline runs (not HIFLD source changes)."
-                ),
-                mo.ui.table(_diff_df),
+        for _lname in sorted(_dropped_tables):
+            _detail_widgets += [
+                mo.md(f"#### `{_lname}` — Dropped Records (invalid coordinates, first 100)"),
+                mo.ui.table(_dropped_tables[_lname]),
             ]
-            for _lname in sorted(set(list(_add_tables) + list(_del_tables) + list(_upd_native_tables) + list(_upd_osm_tables))):
-                _detail_widgets.append(mo.md(f"#### `hifld_{_lname}` details"))
-                if _lname in _add_tables:
-                    _detail_widgets += [mo.md(f"**Adds ({len(_add_tables[_lname])})**"), mo.ui.table(_add_tables[_lname])]
-                if _lname in _del_tables:
-                    _detail_widgets += [mo.md(f"**Deletes ({len(_del_tables[_lname])})**"), mo.ui.table(_del_tables[_lname])]
-                if _lname in _upd_native_tables:
-                    _detail_widgets += [mo.md(f"**Native attribute updates ({len(_upd_native_tables[_lname])})**"), mo.ui.table(_upd_native_tables[_lname])]
-                if _lname in _upd_osm_tables:
-                    _detail_widgets += [mo.md(f"**OSM-link changes ({len(_upd_osm_tables[_lname])})**"), mo.ui.table(_upd_osm_tables[_lname])]
 
-            _snap_display = mo.vstack(_detail_widgets)
+        for _lname in sorted(_osm_new_tables):
+            _detail_widgets += [
+                mo.md(f"#### `{_lname}` — OSM-Matched HIFLD Records (first 100)"),
+                mo.ui.table(_osm_new_tables[_lname]),
+            ]
+
+        _snap_display = mo.vstack(_detail_widgets)
 
     _snap_display
     return
