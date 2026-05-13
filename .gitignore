@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+.uv/
+
+# Data (large files not committed)
+data/bronze/
+data/silver/
+data/gold/
+data/tiles/
+*.osm.pbf
+*.parquet
+!data/seed/*.parquet
+*.pmtiles
+*.mbtiles
+
+# DuckDB
+*.duckdb
+*.wal
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Ignore agent skills
+.agents/
+
+# Environment secrets (API keys, tokens)
+.env.local

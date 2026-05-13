@@ -10,6 +10,10 @@ osm:
     - water_infrastructure
     - telecom
     - fuel
+    - safety
+    - health
+    - transportation
+    - education
 
 duckdb:
   memory_limit: "16GB"                    # Increase for larger PBF files
@@ -31,6 +35,28 @@ epa:
   # Source: https://ordsext.epa.gov/FLA/www3/state_files/
   frs_zip_url: "https://ordsext.epa.gov/FLA/www3/state_files/national_single.zip"
 
+echo:
+  # EPA ECHO Exporter — one row per regulated facility (~1.5M facilities, ~500 MB)
+  exporter_zip_url: "https://echo.epa.gov/files/echodownloads/echo_exporter.zip"
+
+sdwis:
+  # EPA SDWIS public water systems via ECHO SDWA data downloads
+  sdwa_zip_url: "https://echo.epa.gov/files/echodownloads/SDWA_downloads.zip"
+
+fcc:
+  # FCC Antenna Structure Registration (ASR) full database (weekly update)
+  asr_zip_url: "https://data.fcc.gov/download/pub/uls/complete/r_tower.zip"
+
+irs:
+  # IRS Terminal Control Number (TCN) directory — fuel terminals (monthly update)
+  tcn_xlsx_url: "https://www.irs.gov/pub/irs-sbse/tcn-db.xlsx"
+
+eia_api:
+  # EIA Open Data API — key stored in .env.local as EIA_API_KEY
+  # Register at: https://www.eia.gov/opendata/register.php
+  env_key_name: "EIA_API_KEY"
+  terminal_stocks_url: "https://api.eia.gov/v2/petroleum/move/terminalstocks/"
+
 conflation:
   name_similarity_threshold: 0.85     # rapidfuzz score (0-1) for name matching
   spatial_proximity_meters: 50.0      # BallTree distance threshold for matching
@@ -48,3 +74,48 @@ aoi:
   # Optional bounding box to clip output (leave null for full extent)
   # Format: [min_lon, min_lat, max_lon, max_lat]
   bbox: null
+
+hifld:
+  # HIFLD open data via seerai.ai GCS archive — used for confidence validation only
+  # (data is frozen/archived; never creates new POIs, only boosts existing OSM points)
+  enabled: true
+
+campus_collapse:
+  # Campus-style POI collapse: one gold point per campus polygon.
+  # Campus polygons (amenity=hospital/university/school/college) collapse all
+  # sub-features that fall within their boundary into a single primary POI.
+  # Sub-features are retained in silver/campus_buildings.parquet.
+  enabled: true
+  layers:
+    health:
+      campus_polygon_amenities:
+        - hospital
+    education:
+      campus_polygon_amenities:
+        - university
+        - school
+        - college
+        - kindergarten
+
+epa_naics:
+  # EPA FRS NAICS/SIC → FEMA Lifeline confidence boost + new POI minting.
+  # Pass 1: tight spatial match against existing silver points (same threshold as HIFLD).
+  # Pass 2: re-geocode unmatched records, check displacement, match or mint new POIs.
+  enabled: true
+  pass1_match_distance_m: 50.0      # tight BallTree match — follows HIFLD pattern
+  pass2_match_distance_m: 100.0     # re-geocoded point match (building-level placement)
+  max_displacement_m: 500.0         # if geocoded addr > this far from FRS coords, use FRS coords as-is
+  boost_tier1: 0.25                 # critical infrastructure (power plants, hospitals, water treatment)
+  boost_tier2: 0.15                 # high-value infrastructure (pipelines, telecom lines, pharmacies)
+  boost_tier3: 0.05                 # supporting infrastructure (gas extraction, freight depots)
+  mint_new_pois: true               # create new silver POIs for unmatched FRS lifeline records
+  geocode_address_path: "E:/lifelinepois/data/bronze/overture/addresses"        # path to Overture address parquet partition root (null = skip Pass 2 re-geocode)
+
+cms:
+  # CMS Hospital & Non-Hospital Provider Info — authoritative bed counts + provider attributes.
+  # Matched to silver health POIs via state+ZIP pre-filter + rapidfuzz name match.
+  # Writes silver/attr_health_cms.parquet; gold hifld_hospitals.parquet coalesces BEDS from this.
+  enabled: true
+  api_url: "https://data.cms.gov/data-api/v1/dataset/8ba0f9b4-9493-4aa0-9f82-44ea9468d1b5/data"
+  name_similarity_threshold: 0.80   # rapidfuzz token_sort_ratio threshold (0–1)
+  page_size: 5000                   # records per API page (max supported by CMS API)

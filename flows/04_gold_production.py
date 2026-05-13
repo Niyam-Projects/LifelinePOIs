@@ -1,12 +1,13 @@
 import marimo
 
-__generated_with = "0.10.0"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 
 @app.cell(hide_code=True)
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -49,7 +50,7 @@ def _(BaseModel, Field):
 
 
 @app.cell
-def _(FlowParams, mo):
+def _(mo):
     params_form = (
         mo.md("""
         ## Parameters
@@ -72,7 +73,7 @@ def _(FlowParams, mo):
 def _(FlowParams, mo):
     import sys as _sys
     is_script_mode = mo.app_meta().mode == "script"
-    if is_script_mode and (not mo.cli_args() or "help" in mo.cli_args()):
+    if is_script_mode and "help" in mo.cli_args():
         print("Usage: marimo run flows/04_gold_production.py -- [options]\n")
         for _name, _field in FlowParams.model_fields.items():
             _default = f"(default: {_field.default})" if _field.default is not None else "(required)"
@@ -117,7 +118,7 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
             print(f"    WARNING: silver/lifeline_points.parquet not found — skipping")
             return False
         master = _load_parquet(master_path)
-        layer_master = master[master["lifeline_layer"] == layer].copy()
+        layer_master = master[master["tmp_osm_layer"] == layer].copy()
         if len(layer_master) == 0:
             print(f"    WARNING: No records for layer '{layer}' in Silver master — skipping")
             return False
@@ -134,6 +135,44 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
             existing = set(wide.columns) - {"lifeline_id"}
             bridge_cols = ["lifeline_id"] + [c for c in bridge_no_dup.columns if c not in existing and c != "lifeline_id"]
             wide = wide.merge(bridge_no_dup[bridge_cols], on="lifeline_id", how="left")
+        # Merge supplemental CMS attribute table if present (e.g. attr_health_cms.parquet)
+        cms_attr_path = silver_path / f"attr_{layer}_cms.parquet"
+        if cms_attr_path.exists():
+            cms_attr = _load_parquet(cms_attr_path)
+            if cms_attr is not None and "lifeline_id" in cms_attr.columns:
+                cms_no_geom = cms_attr.drop(columns=["geometry"], errors="ignore")
+                existing = set(wide.columns) - {"lifeline_id"}
+                cms_cols = ["lifeline_id"] + [c for c in cms_no_geom.columns if c not in existing and c != "lifeline_id"]
+                wide = wide.merge(cms_no_geom[cms_cols], on="lifeline_id", how="left")
+        # Merge supplemental HIFLD hospital attr table if present (e.g. attr_health_hifld_attrs.parquet)
+        hifld_attr_path = silver_path / f"attr_{layer}_hifld_attrs.parquet"
+        if hifld_attr_path.exists():
+            hifld_attr = _load_parquet(hifld_attr_path)
+            if hifld_attr is not None and "lifeline_id" in hifld_attr.columns:
+                hifld_no_geom = hifld_attr.drop(columns=["geometry"], errors="ignore")
+                existing = set(wide.columns) - {"lifeline_id"}
+                hifld_cols = ["lifeline_id"] + [c for c in hifld_no_geom.columns if c not in existing and c != "lifeline_id"]
+                wide = wide.merge(hifld_no_geom[hifld_cols], on="lifeline_id", how="left")
+        # Merge supplemental ACS trauma attr table if present (e.g. attr_health_acs_trauma.parquet)
+        acs_attr_path = silver_path / f"attr_{layer}_acs_trauma.parquet"
+        if acs_attr_path.exists():
+            acs_attr = _load_parquet(acs_attr_path)
+            if acs_attr is not None and "lifeline_id" in acs_attr.columns:
+                acs_no_geom = acs_attr.drop(columns=["geometry"], errors="ignore")
+                existing = set(wide.columns) - {"lifeline_id"}
+                acs_cols = ["lifeline_id"] + [c for c in acs_no_geom.columns if c not in existing and c != "lifeline_id"]
+                wide = wide.merge(acs_no_geom[acs_cols], on="lifeline_id", how="left")
+        # Promote tmp_ fields to permanent gold columns, then drop all tmp_ cols
+        for _tmp, _perm in [
+            ("tmp_fema_id", "fema_id"),
+            ("tmp_lifeline_component", "lifeline_component"),
+            ("tmp_lifeline_subcomponent", "lifeline_subcomponent"),
+            ("tmp_lifeline_category", "lifeline_category"),
+        ]:
+            if _tmp in wide.columns:
+                wide[_perm] = wide[_tmp]
+        _tmp_cols = [c for c in wide.columns if c.startswith("tmp_")]
+        wide = wide.drop(columns=_tmp_cols, errors="ignore")
         gold_path.mkdir(parents=True, exist_ok=True)
         out_path = gold_path / f"wide_{layer}.parquet"
         if isinstance(wide, gpd.GeoDataFrame):
@@ -164,10 +203,232 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
 
 
 @app.cell
-def _(gold_result, mo):
+def _(Path, cfg, gpd, mo):
+    # Produce hifld_hospitals.parquet from the pipeline-processed health gold layer.
+    # This is the OSM-sourced output (campus-collapsed + HIFLD confidence-boosted),
+    # NOT a raw copy of HIFLD bronze. The file keeps the same name so downstream QA
+    # and consumers that expect hifld_hospitals.parquet continue to work.
+    _gold_path = Path(cfg.storage.gold_path)
+    _wide_health = _gold_path / "wide_health.parquet"
+    _out = _gold_path / "hifld_hospitals.parquet"
+
+    if not _wide_health.exists():
+        hifld_hospitals_result = mo.callout(
+            mo.md("⏭ `gold/wide_health.parquet` not found — skipping `hifld_hospitals.parquet`."),
+            kind="neutral",
+        )
+    else:
+        try:
+            _gdf = gpd.read_parquet(_wide_health)
+
+            # Keep only the "Hospitals" lifeline category (not Specialty Hospitals, Outpatient, etc.)
+            if "lifeline_category" in _gdf.columns:
+                _before_cat = len(_gdf)
+                _gdf = _gdf[_gdf["lifeline_category"] == "Hospitals"].copy()
+                print(f"  lifeline_category filter: {_before_cat:,} → {len(_gdf):,} (Hospitals only)")
+
+            # Keep only point geometries — polygons are campus footprints, not usable POIs
+            _before_geom = len(_gdf)
+            _gdf = _gdf[_gdf.geometry.geom_type == "Point"].copy()
+            print(f"  geometry filter: {_before_geom:,} → {len(_gdf):,} (points only)")
+
+            # Exclude records whose sole source is epa_frs — unreliable without OSM corroboration
+            if "source_provenance" in _gdf.columns:
+                _before_epa = len(_gdf)
+                _gdf = _gdf[_gdf["source_provenance"] != "epa_frs"].copy()
+                print(f"  epa_frs-only filter: {_before_epa:,} → {len(_gdf):,} (removed sole-epa_frs records)")
+
+            # Add osm_lifeline_id = lifeline_id so QA can display linkage info
+            if "lifeline_id" in _gdf.columns and "osm_lifeline_id" not in _gdf.columns:
+                _gdf["osm_lifeline_id"] = _gdf["lifeline_id"]
+
+            # --- CMS bed count coalesce ---
+            # If wide_health already has cms_bed_cnt (from _produce_gold_layer supplemental merge),
+            # use it; otherwise try loading attr_health_cms directly.
+            if "cms_bed_cnt" not in _gdf.columns:
+                _cms_attr_path = Path(cfg.storage.silver_path) / "attr_health_cms.parquet"
+                if _cms_attr_path.exists():
+                    import pandas as _pd
+                    _cms_attr = _pd.read_parquet(_cms_attr_path)
+                    _gdf = _gdf.merge(
+                        _cms_attr[["lifeline_id", "cms_bed_cnt", "cms_certified_bed_cnt",
+                                   "cms_operating_rooms", "cms_match_score",
+                                   "cms_provider_num"]].rename(columns={}),
+                        on="lifeline_id", how="left",
+                    )
+
+            # Coalesce: CMS bed count wins over OSM beds when available
+            if "cms_bed_cnt" in _gdf.columns:
+                import pandas as _pd
+                _osm_beds = _pd.to_numeric(_gdf.get("beds", _pd.Series(dtype="float")), errors="coerce")
+                _cms_beds = _pd.to_numeric(_gdf["cms_bed_cnt"], errors="coerce")
+                # Use CMS value where positive; fall back to OSM beds
+                _beds_coalesced = _cms_beds.where(_cms_beds > 0, _osm_beds)
+                _gdf["beds"] = _beds_coalesced  # update OSM column in-place
+
+            # --- HIFLD bronze schema alignment (additive — keep all OSM columns) ---
+            # Add HIFLD-named columns so this file can replace/update HIFLD bronze
+            # in downstream QA tools that expect the HIFLD schema.
+            import pandas as _pd
+
+            def _geom_coord(gdf, attr):
+                try:
+                    return getattr(gdf.geometry, attr)
+                except Exception:
+                    return _pd.Series(dtype="float64", index=gdf.index)
+
+            _lon = _geom_coord(_gdf, "x")
+            _lat = _geom_coord(_gdf, "y")
+
+            # Combine house number + street into a single ADDRESS field
+            _hn = _gdf.get("addr:housenumber", _pd.Series("", index=_gdf.index)).fillna("").astype(str)
+            _st = _gdf.get("addr:street", _pd.Series("", index=_gdf.index)).fillna("").astype(str)
+            _address = (_hn + " " + _st).str.strip()
+
+            _beds_int = _pd.to_numeric(_gdf.get("beds"), errors="coerce").astype("Int64")
+
+            # TRAUMA: ACS (most authoritative) coalesced with HIFLD
+            def _coalesce_str(*series):
+                """Return first non-null, non-empty value across multiple series."""
+                result = _pd.Series(_pd.NA, index=_gdf.index, dtype="object")
+                for s in series:
+                    if s is None:
+                        continue
+                    mask = result.isna() & s.notna() & (s.astype(str).str.strip() != "")
+                    result = result.where(~mask, s)
+                return result
+
+            _acs_trauma = _gdf.get("acs_trauma_level")
+            _hifld_trauma = _gdf.get("hifld_trauma")
+            _trauma_col = _coalesce_str(
+                _acs_trauma if _acs_trauma is not None else None,
+                _hifld_trauma if _hifld_trauma is not None else None,
+            )
+
+            _hifld_cols = {
+                "NAME":       _gdf.get("name", _gdf.get("display_name", _pd.Series("", index=_gdf.index))).fillna(""),
+                "ADDRESS":    _address,
+                "CITY":       _gdf.get("addr:city", _pd.Series("", index=_gdf.index)).fillna(""),
+                "STATE":      _gdf.get("addr:state", _pd.Series("", index=_gdf.index)).fillna(""),
+                "ZIP":        _gdf.get("addr:postcode", _pd.Series("", index=_gdf.index)).fillna("").str[:5],
+                "ZIP4":       _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "BEDS":       _beds_int,
+                "TELEPHONE":  _gdf.get("phone", _pd.Series("", index=_gdf.index)).fillna(""),
+                "WEBSITE":    _gdf.get("website", _pd.Series("", index=_gdf.index)).fillna(""),
+                "LATITUDE":   _lat,
+                "LONGITUDE":  _lon,
+                "NAICS_CODE": _gdf.get("naics_codes", _pd.Series("", index=_gdf.index)).fillna(""),
+                "NAICS_DESC": _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "SOURCE":     _gdf.get("source_provenance", _pd.Series("", index=_gdf.index)).fillna(""),
+                "COUNTRY":    _pd.Series("USA", index=_gdf.index),
+                "ID":         _gdf.get("lifeline_id", _pd.Series("", index=_gdf.index)).fillna(""),
+                # Populated from HIFLD hospital attrs + ACS
+                "TRAUMA":     _trauma_col,
+                "HELIPAD":    _gdf.get("hifld_helipad", _pd.Series(_pd.NA, index=_gdf.index, dtype="object")),
+                "OWNER":      _gdf.get("hifld_owner", _pd.Series(_pd.NA, index=_gdf.index, dtype="object")),
+                "TYPE":       _gdf.get("hifld_hospital_type", _pd.Series(_pd.NA, index=_gdf.index, dtype="object")),
+                # Deferred null stubs
+                "ALT_NAME":   _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "STATUS":     _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "TTL_STAFF":  _pd.Series(_pd.NA, index=_gdf.index, dtype="Int64"),
+                "POPULATION": _pd.Series(_pd.NA, index=_gdf.index, dtype="Int64"),
+                "COUNTY":     _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "COUNTYFIPS": _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "ST_FIPS":    _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "STATE_ID":   _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "OBJECTID":   _pd.Series(_pd.NA, index=_gdf.index, dtype="Int64"),
+                "SOURCEDATE": _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "VAL_METHOD": _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+                "VAL_DATE":   _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
+            }
+            for _col, _series in _hifld_cols.items():
+                if _col not in _gdf.columns:
+                    _gdf[_col] = _series.values
+
+            _gdf.to_parquet(_out, index=False)
+            _n = len(_gdf)
+            _hifld_n = int((_gdf["source_provenance"].str.contains("hifld", na=False)).sum()) if "source_provenance" in _gdf.columns else 0
+            _cms_n = int((_gdf["cms_bed_cnt"] > 0).sum()) if "cms_bed_cnt" in _gdf.columns else 0
+            _beds_n = int(_gdf["BEDS"].notna().sum()) if "BEDS" in _gdf.columns else 0
+            _trauma_n = int(_gdf["TRAUMA"].notna().sum()) if "TRAUMA" in _gdf.columns else 0
+            print(f"  hifld_hospitals.parquet — {_n:,} rows ({_hifld_n} HIFLD-boosted, {_cms_n} CMS bed counts, {_beds_n} with BEDS, {_trauma_n} with TRAUMA)")
+            hifld_hospitals_result = mo.callout(
+                mo.md(
+                    f"✅ **`hifld_hospitals.parquet` written** — {_n:,} rows "
+                    f"(Hospitals only · points only · epa_frs-only excluded; "
+                    f"{_hifld_n} HIFLD-confirmed; {_cms_n} CMS bed counts; "
+                    f"{_beds_n} with BEDS; {_trauma_n} with TRAUMA level)."
+                ),
+                kind="success",
+            )
+        except Exception as _exc:
+            print(f"  ERROR producing hifld_hospitals.parquet: {_exc}")
+            hifld_hospitals_result = mo.callout(
+                mo.md(f"⚠️ `hifld_hospitals.parquet` failed: {_exc}"), kind="warn"
+            )
+
+    hifld_hospitals_result
+    return (hifld_hospitals_result,)
+
+
+@app.cell
+def _(Path, cfg, gpd, mo, pd):
+    # Campus buildings secondary gold layer
+    _silver_path = Path(cfg.storage.silver_path)
+    _gold_path = Path(cfg.storage.gold_path)
+    _buildings_src = _silver_path / "campus_buildings.parquet"
+    _polygons_src = _silver_path / "campus_polygons.parquet"
+
+    _campus_results: list[tuple[str, int]] = []
+
+    if not hasattr(cfg, "campus_collapse") or not cfg.campus_collapse.enabled:
+        campus_buildings_result = mo.callout(
+            mo.md("⏭ Campus collapse disabled — campus buildings gold skipped."), kind="neutral"
+        )
+    elif not _buildings_src.exists():
+        campus_buildings_result = mo.callout(
+            mo.md("⏭ `silver/campus_buildings.parquet` not found — run Flow 02b first."), kind="neutral"
+        )
+    else:
+        try:
+            _buildings = gpd.read_parquet(_buildings_src)
+            _gold_path.mkdir(parents=True, exist_ok=True)
+            _out = _gold_path / "campus_buildings.parquet"
+            _buildings.to_parquet(_out, index=False)
+            _campus_results.append(("campus_buildings", len(_buildings)))
+            print(f"  gold/campus_buildings.parquet — {len(_buildings):,} rows")
+        except Exception as _exc:
+            print(f"  ERROR writing campus_buildings gold: {_exc}")
+
+        if _polygons_src.exists():
+            try:
+                _polys = gpd.read_parquet(_polygons_src)
+                _out_poly = _gold_path / "campus_polygons.parquet"
+                _polys.to_parquet(_out_poly, index=False)
+                _campus_results.append(("campus_polygons", len(_polys)))
+                print(f"  gold/campus_polygons.parquet — {len(_polys):,} rows")
+            except Exception as _exc:
+                print(f"  ERROR writing campus_polygons gold: {_exc}")
+
+        campus_buildings_result = mo.callout(
+            mo.md(
+                "✅ **Campus buildings gold complete.**  "
+                + "  ".join(f"`{nm}` ({n:,} rows)" for nm, n in _campus_results)
+            ),
+            kind="success",
+        )
+
+    campus_buildings_result
+    return (campus_buildings_result,)
+
+
+@app.cell
+def _(campus_buildings_result, gold_result, hifld_hospitals_result, mo):
     mo.vstack([
         mo.md("## Gold Production Summary"),
         gold_result,
+        hifld_hospitals_result,
+        campus_buildings_result,
         mo.callout(mo.md("✅ **Flow 04 complete.** ➡ Run `flows/05_generate_tiles.py` next."), kind="success"),
     ])
     return

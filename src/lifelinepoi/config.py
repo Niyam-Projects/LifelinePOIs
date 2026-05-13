@@ -56,6 +56,201 @@ class EPAConfig:
 
 
 @dataclass
+class ECHOConfig:
+    # EPA ECHO Exporter — one row per regulated facility (~1.5M facilities, ~500 MB)
+    exporter_zip_url: str = "https://echo.epa.gov/files/echodownloads/echo_exporter.zip"
+
+
+@dataclass
+class SDWISConfig:
+    # EPA SDWIS via ECHO SDWA data downloads (public water systems)
+    sdwa_zip_url: str = "https://echo.epa.gov/files/echodownloads/SDWA_downloads.zip"
+
+
+@dataclass
+class FCCConfig:
+    # FCC Antenna Structure Registration (ASR) - registered towers (r_tower.zip)
+    # Old URL https://data.fcc.gov/download/asr/asr_full.zip returns 404
+    asr_zip_url: str = "https://data.fcc.gov/download/pub/uls/complete/r_tower.zip"
+
+
+@dataclass
+class IRSConfig:
+    # IRS Terminal Control Number (TCN) directory — fuel terminals (Excel, monthly update)
+    tcn_xlsx_url: str = "https://www.irs.gov/pub/irs-sbse/tcn-db.xlsx"
+
+
+@dataclass
+class EIAApiConfig:
+    """EIA Open Data API config — API key read from .env.local at runtime.
+    Register at: https://www.eia.gov/opendata/register.php
+    """
+    env_key_name: str = "EIA_API_KEY"
+    terminal_stocks_url: str = "https://api.eia.gov/v2/petroleum/move/terminalstocks/"
+
+
+@dataclass
+class HifldLayerDef:
+    gcs_path: str
+    lon_field: str
+    lat_field: str
+    osm_layer: str  # which silver OSM layer this validates
+    fema_id: str = ""
+    lifeline_component: str = ""
+    lifeline_subcomponent: str = ""
+    lifeline_category: str = ""
+    display_name_field: str = ""   # which field to use as display_name
+    nested_properties: bool = False  # True if real data is in a 'properties' dict column
+    id_field: str = "OBJECTID"       # field to use in UUID5 generation
+
+
+@dataclass
+class HifldConfig:
+    enabled: bool = True
+    layers: dict = field(default_factory=lambda: {
+        "hospitals": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/hospitals/hospitals/hospitals.parquet",
+            lon_field="LONGITUDE",
+            lat_field="LATITUDE",
+            osm_layer="health",
+            fema_id="019dab83-9fc6-7140-890f-8e81f3409bea",
+            lifeline_component="Health and Medical",
+            lifeline_subcomponent="Medical Care",
+            lifeline_category="Hospitals",
+            display_name_field="NAME",
+            nested_properties=False,
+            id_field="OBJECTID",
+        ),
+        "cellular": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/cellular-towers/cellular/cellular.parquet",
+            lon_field="londec", lat_field="latdec", osm_layer="telecom",
+            fema_id="019dab83-9fc6-7d7c-a2ca-a5ac8500770b",
+            lifeline_component="Communications",
+            lifeline_subcomponent="Infrastructure",
+            lifeline_category="Wireless",
+            display_name_field="Licensee",
+            nested_properties=False,
+            id_field="FID",
+        ),
+        "microwave": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/microwave-service-towers/microwave/microwave.parquet",
+            lon_field="properties.londec", lat_field="properties.latdec", osm_layer="telecom",
+            fema_id="019dab83-9fc6-7d7c-a2ca-a5ac8500770b",
+            lifeline_component="Communications",
+            lifeline_subcomponent="Infrastructure",
+            lifeline_category="Wireless",
+            display_name_field="Licensee",
+            nested_properties=True,
+            id_field="FID",
+        ),
+        "lm_private": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/land-mobile-private-transmission-towers/lm-private/lm-private.parquet",
+            lon_field="properties.londec", lat_field="properties.latdec", osm_layer="telecom",
+            fema_id="019dab83-9fc6-7d7c-a2ca-a5ac8500770b",
+            lifeline_component="Communications",
+            lifeline_subcomponent="Infrastructure",
+            lifeline_category="Wireless",
+            display_name_field="Licensee",
+            nested_properties=True,
+            id_field="FID",
+        ),
+        "lm_commercial": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/land-mobile-commercial-transmission-towers/lm-commercial/lm-commercial.parquet",
+            lon_field="properties.londec", lat_field="properties.latdec", osm_layer="telecom",
+            fema_id="019dab83-9fc6-7650-a051-a502b3f05417",
+            lifeline_component="Communications",
+            lifeline_subcomponent="Infrastructure",
+            lifeline_category="Cable Systems and Wireline",
+            display_name_field="Licensee",
+            nested_properties=True,
+            id_field="FID",
+        ),
+        "wastewater_treatment_plants": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/epa-facility-registry-service-frs---integrated-compliance-information-system-icis-wastewater-treatment-plants/integrated-compliance-information-system-icis-wastewater-treatment-plants/integrated-compliance-information-system-icis-wastewater-treatment-plants.parquet",
+            lon_field="properties.FAC_LONG", lat_field="properties.FAC_LAT", osm_layer="water_infrastructure",
+            fema_id="019dab83-9fc6-7d06-a032-0e5d620955b1",
+            lifeline_component="Water Systems",
+            lifeline_subcomponent="Wastewater Management",
+            lifeline_category="Wastewater Systems",
+            display_name_field="CWP_NAME",
+            nested_properties=True,
+            id_field="OBJECTID",
+        ),
+        "lng_terminals": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/liquified-natural-gas-lng-import-and-export-terminals/lng-import-and-export-terminals/lng-import-and-export-terminals.parquet",
+            lon_field="Longitude", lat_field="Latitude", osm_layer="fuel",
+            fema_id="019dab83-9fc6-778c-8a6e-8f16938837eb",
+            lifeline_component="Energy",
+            lifeline_subcomponent="Fuel",
+            lifeline_category="Fuel Storage and Terminals",
+            display_name_field="Facility",
+            nested_properties=False,
+            id_field="OBJECTID",
+        ),
+        "petroleum_refineries": HifldLayerDef(
+            gcs_path="gs://seerai-hifld-archive/petroleum-refineries/petroleum-refinery/petroleum-refinery.parquet",
+            lon_field="Longitude", lat_field="Latitude", osm_layer="fuel",
+            fema_id="019dab83-9fc6-7537-a91a-d01fc230dc8e",
+            lifeline_component="Energy",
+            lifeline_subcomponent="Fuel",
+            lifeline_category="Petroleum Refineries",
+            display_name_field="Site",
+            nested_properties=False,
+            id_field="OBJECTID",
+        ),
+    })
+
+
+@dataclass
+class CmsConfig:
+    """CMS Hospital & Non-Hospital Provider Info enrichment configuration."""
+    enabled: bool = True
+    api_url: str = "https://data.cms.gov/data-api/v1/dataset/8ba0f9b4-9493-4aa0-9f82-44ea9468d1b5/data"
+    name_similarity_threshold: float = 0.80
+    page_size: int = 5000
+
+
+@dataclass
+class EpaNaicsConfig:
+    """EPA FRS NAICS/SIC lifeline boost + new POI minting configuration."""
+    enabled: bool = True
+    pass1_match_distance_m: float = 50.0
+    pass2_match_distance_m: float = 100.0
+    max_displacement_m: float = 500.0
+    boost_tier1: float = 0.25
+    boost_tier2: float = 0.15
+    boost_tier3: float = 0.05
+    mint_new_pois: bool = True
+    geocode_address_path: Optional[str] = None
+
+
+@dataclass
+class CampusCollapseLayerConfig:
+    """Per-OSM-layer campus collapse settings."""
+    campus_polygon_amenities: list = field(default_factory=list)
+
+
+@dataclass
+class CampusCollapseConfig:
+    """Campus-style POI collapse: one gold point per OSM campus polygon boundary.
+
+    For each configured layer, OSM polygon features with an amenity value in
+    ``campus_polygon_amenities`` define campus boundaries.  All silver points
+    (nodes and building-footprint polygons) whose centroid falls within a
+    boundary are collapsed into a single primary campus POI.  Sub-features are
+    moved to ``silver/campus_buildings.parquet`` and the polygon geometry is
+    saved to ``silver/campus_polygons.parquet``.
+    """
+    enabled: bool = True
+    layers: dict = field(default_factory=lambda: {
+        "health": CampusCollapseLayerConfig(campus_polygon_amenities=["hospital"]),
+        "education": CampusCollapseLayerConfig(
+            campus_polygon_amenities=["university", "school", "college", "kindergarten"]
+        ),
+    })
+
+
+@dataclass
 class ConflationConfig:
     name_similarity_threshold: float = 0.85
     spatial_proximity_meters: float = 50.0
@@ -78,8 +273,17 @@ class LifelineConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     eia: EIAConfig = field(default_factory=EIAConfig)
     epa: EPAConfig = field(default_factory=EPAConfig)
+    echo: ECHOConfig = field(default_factory=ECHOConfig)
+    sdwis: SDWISConfig = field(default_factory=SDWISConfig)
+    fcc: FCCConfig = field(default_factory=FCCConfig)
+    irs: IRSConfig = field(default_factory=IRSConfig)
+    eia_api: EIAApiConfig = field(default_factory=EIAApiConfig)
     conflation: ConflationConfig = field(default_factory=ConflationConfig)
     tiles: TilesConfig = field(default_factory=TilesConfig)
+    hifld: HifldConfig = field(default_factory=HifldConfig)
+    epa_naics: EpaNaicsConfig = field(default_factory=EpaNaicsConfig)
+    campus_collapse: CampusCollapseConfig = field(default_factory=CampusCollapseConfig)
+    cms: CmsConfig = field(default_factory=CmsConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.lifeline.yaml") -> "LifelineConfig":
@@ -90,6 +294,11 @@ class LifelineConfig:
         storage = StorageConfig(**raw.get("storage", {}))
         eia = EIAConfig(**raw.get("eia", {}))
         epa = EPAConfig(**raw.get("epa", {}))
+        echo = ECHOConfig(**raw.get("echo", {}))
+        sdwis = SDWISConfig(**raw.get("sdwis", {}))
+        fcc = FCCConfig(**raw.get("fcc", {}))
+        irs = IRSConfig(**raw.get("irs", {}))
+        eia_api = EIAApiConfig(**raw.get("eia_api", {}))
         conflation_raw = raw.get("conflation", {})
         conflation = ConflationConfig(
             name_similarity_threshold=conflation_raw.get("name_similarity_threshold", 0.85),
@@ -99,5 +308,27 @@ class LifelineConfig:
             }),
         )
         tiles = TilesConfig(**raw.get("tiles", {}))
+        hifld_raw = raw.get("hifld", {})
+        hifld = HifldConfig(enabled=hifld_raw.get("enabled", True)) if hifld_raw else HifldConfig()
+        epa_naics_raw = raw.get("epa_naics", {})
+        epa_naics = EpaNaicsConfig(**{k: v for k, v in epa_naics_raw.items()
+                                      if k in EpaNaicsConfig.__dataclass_fields__})
+        cc_raw = raw.get("campus_collapse", {})
+        if cc_raw:
+            cc_layers = {}
+            for lname, ldata in cc_raw.get("layers", {}).items():
+                cc_layers[lname] = CampusCollapseLayerConfig(
+                    campus_polygon_amenities=ldata.get("campus_polygon_amenities", [])
+                )
+            campus_collapse = CampusCollapseConfig(
+                enabled=cc_raw.get("enabled", True),
+                layers=cc_layers if cc_layers else CampusCollapseConfig().layers,
+            )
+        else:
+            campus_collapse = CampusCollapseConfig()
+        cms_raw = raw.get("cms", {})
+        cms = CmsConfig(**{k: v for k, v in cms_raw.items() if k in CmsConfig.__dataclass_fields__})
         return cls(osm=osm, duckdb=duckdb, storage=storage, eia=eia, epa=epa,
-                   conflation=conflation, tiles=tiles)
+                   echo=echo, sdwis=sdwis, fcc=fcc, irs=irs, eia_api=eia_api,
+                   conflation=conflation, tiles=tiles, hifld=hifld, epa_naics=epa_naics,
+                   campus_collapse=campus_collapse, cms=cms)
