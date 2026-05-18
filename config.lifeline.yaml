@@ -113,9 +113,24 @@ epa_naics:
 
 cms:
   # CMS Hospital & Non-Hospital Provider Info — authoritative bed counts + provider attributes.
-  # Matched to silver health POIs via state+ZIP pre-filter + rapidfuzz name match.
+  # Matching uses a two-tier strategy:
+  #   Tier 1 (spatial): BallTree over geocoded CMS records within spatial_match_distance_m.
+  #                     Requires a minimum fuzzy name score (spatial_name_threshold) as a guard.
+  #   Tier 2 (zip+fuzzy): state + ZIP pre-filter + rapidfuzz name match for unmatched POIs.
   # Writes silver/attr_health_cms.parquet; gold hifld_hospitals.parquet coalesces BEDS from this.
   enabled: true
   api_url: "https://data.cms.gov/data-api/v1/dataset/8ba0f9b4-9493-4aa0-9f82-44ea9468d1b5/data"
-  name_similarity_threshold: 0.80   # rapidfuzz token_sort_ratio threshold (0–1)
+  name_similarity_threshold: 0.80   # rapidfuzz token_sort_ratio threshold for Tier 2 (0–1)
   page_size: 5000                   # records per API page (max supported by CMS API)
+  spatial_match_distance_m: 200.0   # BallTree buffer for Tier 1 spatial match (meters)
+  spatial_name_threshold: 0.55      # min fuzzy score to accept a spatial match (0–1)
+  # Overture address geocoding — set to your address parquet root to add coordinates.
+  # Recommended: reuse the same path as epa_naics.geocode_address_path.
+  geocode_address_path: null        # e.g. "E:/lifelinepois/data/bronze/overture/addresses"
+  geocode_min_score: 0.80           # minimum jaro_winkler street-name score to accept
+  geocode_provider_categories:      # PRVDR_CTGRY_CD values to geocode; null = all records
+    - "01"                          # "01" = general/acute-care hospitals only
+  # Fallback geocoding for records Overture could not match (free services):
+  #   Stage 1 — US Census Bureau batch API (50 states + DC + PR)
+  #   Stage 2 — Nominatim/OSM for US territory records (VI, GU, MP, AS)
+  geocode_census_fallback: true     # set false to skip fallback entirely

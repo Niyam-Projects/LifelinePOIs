@@ -1,12 +1,13 @@
 import marimo
 
-__generated_with = "0.10.0"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 
 @app.cell(hide_code=True)
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -53,7 +54,7 @@ def _(BaseModel, Field):
 
 
 @app.cell
-def _(FlowParams, mo):
+def _(mo):
     params_form = (
         mo.md("""
         ## Parameters
@@ -85,7 +86,7 @@ def _(FlowParams, mo):
 def _(FlowParams, mo):
     import sys as _sys
     is_script_mode = mo.app_meta().mode == "script"
-    if is_script_mode and (not mo.cli_args() or "help" in mo.cli_args()):
+    if is_script_mode and "help" in mo.cli_args():
         print("Usage: marimo run flows/05_generate_tiles.py -- [options]\n")
         for _name, _field in FlowParams.model_fields.items():
             _default = f"(default: {_field.default})" if _field.default is not None else "(required)"
@@ -150,8 +151,8 @@ def _(Path, cfg, flow_params, gpd, mo, pd, time):
     def _write_pmtiles(gdf, output_path, layer_name, min_zoom, max_zoom):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
-        _freestiler.write_pmtiles(
-            data=gdf, output=str(output_path),
+        _freestiler.freestile(
+            input=gdf, output=str(output_path),
             layer_name=layer_name, min_zoom=min_zoom, max_zoom=max_zoom,
         )
         elapsed = time.perf_counter() - t0
@@ -200,12 +201,16 @@ def _(Path, cfg, flow_params, gpd, mo, pd, time):
 
 
 @app.cell
-def _(mo, tiles_result):
-    mo.vstack([
-        mo.md("## Tiles Summary"),
-        tiles_result,
-        mo.callout(mo.md("✅ **Flow 05 complete.** ➡ Run `flows/06_qa.py` for visual QA."), kind="success"),
-    ])
+def _(is_script_mode, mo, tiles_result):
+    if is_script_mode:
+        print("Tiles Summary")
+        print("Flow 05 complete. Run flows/06_qa.py for visual QA.")
+    else:
+        mo.vstack([
+            mo.md("## Tiles Summary"),
+            tiles_result,
+            mo.callout(mo.md("✅ **Flow 05 complete.** ➡ Run `flows/06_qa.py` for visual QA."), kind="success"),
+        ])
     return
 
 

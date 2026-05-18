@@ -1138,8 +1138,6 @@ def _(cfg, flow_params, mo):
 @app.cell
 def _(cfg, flow_params, mo):
     if flow_params.run_cms and cfg.cms.enabled:
-        import httpx as _httpx
-        import json as _json
         from pathlib import Path as _P
 
         _out_dir = _P(cfg.storage.bronze_path) / "cms"
@@ -1153,48 +1151,10 @@ def _(cfg, flow_params, mo):
             )
         else:
             try:
-                import duckdb as _duckdb
-                import tempfile as _tempfile
+                from lib.cms_ingest import download_cms_providers as _dl_cms
 
-                _all_rows: list[dict] = []
-                _offset = 0
-                _page = cfg.cms.page_size
-                _base_url = cfg.cms.api_url
-                print(f"[CMS] Downloading hospital provider data from CMS API (page_size={_page})")
-
-                while True:
-                    _url = f"{_base_url}?offset={_offset}&size={_page}"
-                    _resp = _httpx.get(_url, timeout=120, follow_redirects=True)
-                    _resp.raise_for_status()
-                    _batch = _resp.json()
-                    if not _batch:
-                        break
-                    _all_rows.extend(_batch)
-                    _offset += len(_batch)
-                    print(f"  fetched {_offset:,} records so far...")
-                    if len(_batch) < _page:
-                        break
-
-                if not _all_rows:
-                    raise ValueError("CMS API returned no records")
-
-                _tmp = _P(_tempfile.mktemp(suffix=".json"))
-                _tmp.write_text(_json.dumps(_all_rows), encoding="utf-8")
-                _tmp_str = str(_tmp).replace("\\", "/")
-                _out_str = str(_out_path).replace("\\", "/")
-                _conn = _duckdb.connect()
-                try:
-                    _conn.execute(
-                        f"COPY (SELECT * FROM read_json('{_tmp_str}', auto_detect=true)) "
-                        f"TO '{_out_str}' (FORMAT PARQUET)"
-                    )
-                    _count = _conn.execute(f"SELECT COUNT(*) FROM '{_out_str}'").fetchone()[0]
-                finally:
-                    _conn.close()
-                    _tmp.unlink(missing_ok=True)
-
+                _count = _dl_cms(cfg.cms.api_url, cfg.cms.page_size, _out_path)
                 _mb = _out_path.stat().st_size / 1_048_576
-                print(f"  CMS providers: {_count:,} records → {_out_path.name} ({_mb:.1f} MB)")
                 cms_result = mo.callout(
                     mo.md(f"✅ **CMS providers downloaded** — {_count:,} records ({_mb:.1f} MB)."),
                     kind="success",
@@ -1209,8 +1169,109 @@ def _(cfg, flow_params, mo):
 
 
 @app.cell
+def _(cfg, flow_params, mo, cms_result):  # noqa: F841 — depends on cms_result to run after download
+    _geo_path = getattr(cfg.cms, "geocode_address_path", None)
+    if (
+        flow_params.run_cms
+        and cfg.cms.enabled
+        and _geo_path
+    ):
+        from pathlib import Path as _P
+
+        _parquet_path = _P(cfg.storage.bronze_path) / "cms" / "cms_hospital_providers.parquet"
+        if not _parquet_path.exists():
+            cms_geocode_result = mo.callout(
+                mo.md("⏭ CMS geocoding skipped — bronze parquet not found (download may have failed)."),
+                kind="neutral",
+            )
+        elif not _P(_geo_path).exists():
+            cms_geocode_result = mo.callout(
+                mo.md(f"⚠️ CMS geocoding skipped — `geocode_address_path` not found: `{_geo_path}`"),
+                kind="warn",
+            )
+        else:
+            try:
+                from lib.cms_ingest import geocode_cms_providers as _geo_cms
+
+                _stats = _geo_cms(
+                    _parquet_path,
+                    _geo_path,
+                    min_score=cfg.cms.geocode_min_score,
+                    provider_categories=cfg.cms.geocode_provider_categories,
+                )
+                _ok = _stats.get("ok", 0)
+                _total = sum(_stats.values())
+                cms_geocode_result = mo.callout(
+                    mo.md(f"✅ **CMS geocoding complete** — {_ok:,}/{_total:,} records geocoded."),
+                    kind="success",
+                )
+            except Exception as _e:
+                print(f"  ERROR: CMS geocoding failed: {_e}")
+                cms_geocode_result = mo.callout(
+                    mo.md(f"⚠️ CMS geocoding failed: {_e}"), kind="warn"
+                )
+    else:
+        cms_geocode_result = mo.callout(
+            mo.md("⏭ CMS geocoding skipped — `geocode_address_path` not configured."),
+            kind="neutral",
+        )
+    cms_geocode_result
+    return (cms_geocode_result,)
+
+
+@app.cell
+def _(cfg, flow_params, mo, cms_geocode_result):  # noqa: F841 — runs after Overture geocode
+    if (
+        flow_params.run_cms
+        and cfg.cms.enabled
+        and getattr(cfg.cms, "geocode_census_fallback", True)
+    ):
+        from pathlib import Path as _P
+
+        _parquet_path = _P(cfg.storage.bronze_path) / "cms" / "cms_hospital_providers.parquet"
+        if not _parquet_path.exists():
+            cms_fallback_result = mo.callout(
+                mo.md("⏭ CMS fallback geocoding skipped — bronze parquet not found."),
+                kind="neutral",
+            )
+        else:
+            try:
+                from lib.cms_ingest import fallback_geocode_cms_providers as _fb_cms
+
+                _stats = _fb_cms(
+                    _parquet_path,
+                    provider_categories=cfg.cms.geocode_provider_categories,
+                )
+                _ok = _stats.get("ok_census", 0) + _stats.get("ok_nominatim", 0)
+                _total = sum(_stats.values())
+                _detail = ""
+                if _stats.get("ok_census"):
+                    _detail += f" Census: {_stats['ok_census']:,}."
+                if _stats.get("ok_nominatim"):
+                    _detail += f" Nominatim: {_stats['ok_nominatim']:,}."
+                cms_fallback_result = mo.callout(
+                    mo.md(f"✅ **CMS fallback geocoding complete** — {_ok:,}/{_total:,} additional records geocoded.{_detail}"),
+                    kind="success",
+                )
+            except Exception as _e:
+                print(f"  ERROR: CMS fallback geocoding failed: {_e}")
+                cms_fallback_result = mo.callout(
+                    mo.md(f"⚠️ CMS fallback geocoding failed: {_e}"), kind="warn"
+                )
+    else:
+        cms_fallback_result = mo.callout(
+            mo.md("⏭ CMS fallback geocoding skipped."),
+            kind="neutral",
+        )
+    cms_fallback_result
+    return (cms_fallback_result,)
+
+
+@app.cell
 def _(
     cms_result,
+    cms_geocode_result,
+    cms_fallback_result,
     echo_result,
     eia_api_result,
     eia_result,
@@ -1221,22 +1282,29 @@ def _(
     mo,
     osm_result,
     sdwis_result,
+    is_script_mode,
 ):
-    _summary = mo.vstack([
-        mo.md("## Ingestion Summary"),
-        osm_result,
-        eia_result,
-        epa_result,
-        echo_result,
-        sdwis_result,
-        fcc_result,
-        irs_result,
-        eia_api_result,
-        hifld_result,
-        cms_result,
-        mo.callout(mo.md("✅ **Flow 01 complete.** ➡ Run `flows/02_silver_conflation.py` next."), kind="success"),
-    ])
-    _summary
+    if is_script_mode:
+        print("Ingestion Summary")
+        print("Flow 01 complete. Run flows/02_silver_conflation.py next.")
+    else:
+        _summary = mo.vstack([
+            mo.md("## Ingestion Summary"),
+            osm_result,
+            eia_result,
+            epa_result,
+            echo_result,
+            sdwis_result,
+            fcc_result,
+            irs_result,
+            eia_api_result,
+            hifld_result,
+            cms_result,
+            cms_geocode_result,
+            cms_fallback_result,
+            mo.callout(mo.md("✅ **Flow 01 complete.** ➡ Run `flows/02_silver_conflation.py` next."), kind="success"),
+        ])
+        _summary
     return
 
 

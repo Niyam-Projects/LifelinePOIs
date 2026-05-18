@@ -1,0 +1,91 @@
+key,lifeline,lifeline_key,lifeline_component,lifeline_component_key,lifeline_subcomponent
+police_stations,Safety and Security,safety_and_security,Law Enforcement/Security,law_enforcement_security,Police Stations
+law_enforcement,Safety and Security,safety_and_security,Law Enforcement/Security,law_enforcement_security,Law Enforcement/Security Operations
+site_security,Safety and Security,safety_and_security,Law Enforcement/Security,law_enforcement_security,Site Security
+correctional_facilities,Safety and Security,safety_and_security,Law Enforcement/Security,law_enforcement_security,Correctional Facilities
+fire_stations,Safety and Security,safety_and_security,Fire Service,fire_service,Fire Stations
+firefighting_resources,Safety and Security,safety_and_security,Fire Service,fire_service,Firefighting Resources
+search_and_rescue,Safety and Security,safety_and_security,Fire Service,fire_service,Search and Rescue
+local_search_and_rescue,Safety and Security,safety_and_security,Fire Service,fire_service,Local Search and Rescue
+emergency_operation_centers,Safety and Security,safety_and_security,Government Service,government_service,Emergency Operation Centers
+essential_government_functions,Safety and Security,safety_and_security,Government Service,government_service,Essential Government Functions
+government_offices,Safety and Security,safety_and_security,Government Service,government_service,Government Offices
+government_schools,Safety and Security,safety_and_security,Government Service,government_service,Government Schools
+public_records,Safety and Security,safety_and_security,Government Service,government_service,Public Records
+historic_cultural_resources,Safety and Security,safety_and_security,Government Service,government_service,Historic/Cultural Resources
+flood_control,Safety and Security,safety_and_security,Community Safety,community_safety,Flood Control
+community_other_hazards,Safety and Security,safety_and_security,Community Safety,community_safety,Other Community Hazards
+food_commercial_distribution,"Food, Hydration, Shelter",food_hydration_shelter,Food,food,Commercial Food Distribution
+food_supply_chain,"Food, Hydration, Shelter",food_hydration_shelter,Food,food,Food Supply Chain
+food_distribution_programs,"Food, Hydration, Shelter",food_hydration_shelter,Food,food,Food Distribution Programs
+hydration_temporary_missions,"Food, Hydration, Shelter",food_hydration_shelter,Hydration,hydration,Temporary Hydration Missions
+commercial_water_supply_chain,"Food, Hydration, Shelter",food_hydration_shelter,Hydration,hydration,Commercial Water Supply Chain
+shelter_housing,"Food, Hydration, Shelter",food_hydration_shelter,Shelter,shelter,Housing/Emergency Shelter
+shelter_commercial_facilities,"Food, Hydration, Shelter",food_hydration_shelter,Shelter,shelter,Commercial Shelter Facilities
+animals_and_agriculture,"Food, Hydration, Shelter",food_hydration_shelter,Agriculture,agriculture,Animals and Agriculture
+hospitals,Health and Medical,health_and_medical,Medical Care,medical_care,Hospitals
+dialysis,Health and Medical,health_and_medical,Medical Care,medical_care,Dialysis Centers
+pharmacies,Health and Medical,health_and_medical,Medical Care,medical_care,Pharmacies
+long_term_care,Health and Medical,health_and_medical,Medical Care,medical_care,Long-Term Care
+va_health_system,Health and Medical,health_and_medical,Medical Care,medical_care,VA Health System
+veterinary_services,Health and Medical,health_and_medical,Medical Care,medical_care,Veterinary Services
+home_care,Health and Medical,health_and_medical,Medical Care,medical_care,Home Care
+health_surveillance,Health and Medical,health_and_medical,Public Health,public_health,Health Surveillance
+public_health_human_services,Health and Medical,health_and_medical,Public Health,public_health,Public Health/Human Services
+behavioral_health,Health and Medical,health_and_medical,Public Health,public_health,Behavioral Health
+vector_control,Health and Medical,health_and_medical,Public Health,public_health,Vector Control
+public_health_labs,Health and Medical,health_and_medical,Public Health,public_health,Public Health Laboratories
+emergency_medical_services,Health and Medical,health_and_medical,Patient Movement,patient_movement,Emergency Medical Services
+medical_supply_blood,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Blood Supply
+medical_supply_pharma_devices,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Pharmaceutical/Medical Devices
+medical_supply_gases,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Medical Gases
+medical_supply_distribution,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Medical Supply Distribution
+critical_clinical_research,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Critical Clinical Research
+medical_supply_sterilization,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Medical Supply Sterilization
+medical_supply_raw_materials,Health and Medical,health_and_medical,Medical Supply Chain,medical_supply_chain,Medical Supply Raw Materials
+mortuary_services,Health and Medical,health_and_medical,Fatality Management,fatality_management,Mortuary Services
+potable_water_intake,Water Systems,water_systems,Potable Water Infrastructure,potable_water_infrastructure,Potable Water Intake
+potable_water_treatment,Water Systems,water_systems,Potable Water Infrastructure,potable_water_infrastructure,Potable Water Treatment
+potable_water_storage,Water Systems,water_systems,Potable Water Infrastructure,potable_water_infrastructure,Potable Water Storage
+potable_water_distribution,Water Systems,water_systems,Potable Water Infrastructure,potable_water_infrastructure,Potable Water Distribution
+wastewater_collection,Water Systems,water_systems,Wastewater Management,wastewater_management,Wastewater Collection
+wastewater_storage,Water Systems,water_systems,Wastewater Management,wastewater_management,Wastewater Storage
+wastewater_treatment,Water Systems,water_systems,Wastewater Management,wastewater_management,Wastewater Treatment
+wastewater_discharge,Water Systems,water_systems,Wastewater Management,wastewater_management,Wastewater Discharge
+power_generation,Energy,energy,Power Grid,power_grid,Electric Power Generation
+power_transmission,Energy,energy,Power Grid,power_grid,Electric Power Transmission
+power_distribution,Energy,energy,Power Grid,power_grid,Electric Power Distribution
+fuel_refineries,Energy,energy,Fuel,fuel,Petroleum Refineries
+fuel_storage,Energy,energy,Fuel,fuel,Fuel Storage and Terminals
+fuel_pipelines,Energy,energy,Fuel,fuel,Fuel Pipelines
+fuel_distribution,Energy,energy,Fuel,fuel,Fuel Distribution
+offshore_oil_platforms,Energy,energy,Fuel,fuel,Offshore Oil/Gas Platforms
+comms_wireless,Communications,communications,Infrastructure,comms_infrastructure,Wireless
+comms_cable_wireline,Communications,communications,Infrastructure,comms_infrastructure,Cable/Wireline
+comms_broadcast,Communications,communications,Infrastructure,comms_infrastructure,Broadcast
+comms_satellite,Communications,communications,Infrastructure,comms_infrastructure,Satellite
+data_centers_internet,Communications,communications,Infrastructure,comms_infrastructure,Data Centers/Internet
+land_mobile_radio,Communications,communications,Responder Communications,responder_communications,Land Mobile Radio
+public_safety_answering_points,Communications,communications,911 and Dispatch,911_and_dispatch,Public Safety Answering Points
+emergency_dispatch,Communications,communications,911 and Dispatch,911_and_dispatch,Emergency Dispatch
+banking_services,Communications,communications,Finance,comms_finance,Banking Services
+electronic_payment_processing,Communications,communications,Finance,comms_finance,Electronic Payment Processing
+local_alert_warning,Communications,communications,Alerts Warnings and Messages,alerts_warnings_messages,Local Alert/Warning
+ipaws_access,Communications,communications,Alerts Warnings and Messages,alerts_warnings_messages,IPAWS Access Points
+nawas_terminals,Communications,communications,Alerts Warnings and Messages,alerts_warnings_messages,NAWAS Terminals
+roads,Transportation,transportation,Highway Roadway Motor Vehicle,highway_roadway_motor_vehicle,Roads
+bridges,Transportation,transportation,Highway Roadway Motor Vehicle,highway_roadway_motor_vehicle,Bridges
+mass_transit_bus,Transportation,transportation,Mass Transit,mass_transit,Bus Transportation
+mass_transit_rail,Transportation,transportation,Mass Transit,mass_transit,Rail Transportation
+mass_transit_ferry,Transportation,transportation,Mass Transit,mass_transit,Ferry Transportation
+railway_freight,Transportation,transportation,Railway,railway,Rail Freight
+railway_passenger,Transportation,transportation,Railway,railway,Rail Passenger
+aviation_commercial,Transportation,transportation,Aviation,aviation,Commercial Aviation
+aviation_general,Transportation,transportation,Aviation,aviation,General Aviation
+aviation_military,Transportation,transportation,Aviation,aviation,Military Aviation
+maritime_waterways,Transportation,transportation,Maritime,maritime,Waterways
+maritime_ports,Transportation,transportation,Maritime,maritime,Ports and Port Facilities
+hazmat_facilities,Hazardous Materials,hazardous_materials,Facilities,hazmat_facilities_component,Hazardous Material Facilities
+hazmat_facility_incidents,Hazardous Materials,hazardous_materials,Facilities,hazmat_facilities_component,Hazardous Facility Incidents
+hazmat_mobile_incidents,Hazardous Materials,hazardous_materials,HAZMAT Pollutants Contaminants,hazmat_pollutants_contaminants,Mobile Hazmat Incidents
+radiological_nuclear_incidents,Hazardous Materials,hazardous_materials,HAZMAT Pollutants Contaminants,hazmat_pollutants_contaminants,Radiological/Nuclear Incidents

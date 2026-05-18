@@ -162,15 +162,7 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
                 existing = set(wide.columns) - {"lifeline_id"}
                 acs_cols = ["lifeline_id"] + [c for c in acs_no_geom.columns if c not in existing and c != "lifeline_id"]
                 wide = wide.merge(acs_no_geom[acs_cols], on="lifeline_id", how="left")
-        # Promote tmp_ fields to permanent gold columns, then drop all tmp_ cols
-        for _tmp, _perm in [
-            ("tmp_fema_id", "fema_id"),
-            ("tmp_lifeline_component", "lifeline_component"),
-            ("tmp_lifeline_subcomponent", "lifeline_subcomponent"),
-            ("tmp_lifeline_category", "lifeline_category"),
-        ]:
-            if _tmp in wide.columns:
-                wide[_perm] = wide[_tmp]
+        # Drop all tmp_ cols (tmp_osm_layer and any others)
         _tmp_cols = [c for c in wide.columns if c.startswith("tmp_")]
         wide = wide.drop(columns=_tmp_cols, errors="ignore")
         gold_path.mkdir(parents=True, exist_ok=True)
@@ -204,28 +196,35 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
 
 @app.cell
 def _(Path, cfg, gpd, mo):
-    # Produce hifld_hospitals.parquet from the pipeline-processed health gold layer.
-    # This is the OSM-sourced output (campus-collapsed + HIFLD confidence-boosted),
-    # NOT a raw copy of HIFLD bronze. The file keeps the same name so downstream QA
-    # and consumers that expect hifld_hospitals.parquet continue to work.
+    # Produce two focused hospital gold outputs from the pipeline-processed health gold layer:
+    #
+    #   wide_hospitals.parquet   — OSM-focused wide format with all silver/enrichment attributes.
+    #                              Used for internal QAQC and attribute analysis.
+    #   hifld_hospitals.parquet  — HIFLD schema–only output.  Contains ONLY the HIFLD field
+    #                              names (NAME, ADDRESS, CITY, …) mapped from silver data.
+    #                              Used for downstream QAQC against the HIFLD standard and as
+    #                              a drop-in replacement for HIFLD bronze in QA tools.
     _gold_path = Path(cfg.storage.gold_path)
     _wide_health = _gold_path / "wide_health.parquet"
+    _wide_out = _gold_path / "wide_hospitals.parquet"
     _out = _gold_path / "hifld_hospitals.parquet"
 
     if not _wide_health.exists():
         hifld_hospitals_result = mo.callout(
-            mo.md("⏭ `gold/wide_health.parquet` not found — skipping `hifld_hospitals.parquet`."),
+            mo.md("⏭ `gold/wide_health.parquet` not found — skipping `wide_hospitals.parquet` and `hifld_hospitals.parquet`."),
             kind="neutral",
         )
     else:
         try:
             _gdf = gpd.read_parquet(_wide_health)
 
-            # Keep only the "Hospitals" lifeline category (not Specialty Hospitals, Outpatient, etc.)
-            if "lifeline_category" in _gdf.columns:
+            # Keep only the "hospitals" primary lifeline (not specialty, outpatient, etc.)
+            if "fema_lifeline" in _gdf.columns:
                 _before_cat = len(_gdf)
-                _gdf = _gdf[_gdf["lifeline_category"] == "Hospitals"].copy()
-                print(f"  lifeline_category filter: {_before_cat:,} → {len(_gdf):,} (Hospitals only)")
+                _gdf = _gdf[_gdf["fema_lifeline"].apply(
+                    lambda x: isinstance(x, dict) and x.get("primary") == "hospitals"
+                )].copy()
+                print(f"  fema_lifeline filter: {_before_cat:,} → {len(_gdf):,} (hospitals only)")
 
             # Keep only point geometries — polygons are campus footprints, not usable POIs
             _before_geom = len(_gdf)
@@ -266,9 +265,14 @@ def _(Path, cfg, gpd, mo):
                 _beds_coalesced = _cms_beds.where(_cms_beds > 0, _osm_beds)
                 _gdf["beds"] = _beds_coalesced  # update OSM column in-place
 
-            # --- HIFLD bronze schema alignment (additive — keep all OSM columns) ---
-            # Add HIFLD-named columns so this file can replace/update HIFLD bronze
-            # in downstream QA tools that expect the HIFLD schema.
+            # --- Step 1: Write wide_hospitals.parquet (OSM-focused, all silver/enrichment attrs) ---
+            # This is the full attribute view BEFORE any HIFLD schema columns are introduced.
+            _gdf.to_parquet(_wide_out, index=False)
+            print(f"  wide_hospitals.parquet — {len(_gdf):,} rows × {len(_gdf.columns)} cols")
+
+            # --- Step 2: Build HIFLD schema–only output ---
+            # All column values are mapped from the silver/wide data above.
+            # The resulting GeoDataFrame contains ONLY the HIFLD field names + geometry.
             import pandas as _pd
 
             def _geom_coord(gdf, attr):
@@ -341,30 +345,33 @@ def _(Path, cfg, gpd, mo):
                 "VAL_METHOD": _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
                 "VAL_DATE":   _pd.Series(_pd.NA, index=_gdf.index, dtype="object"),
             }
-            for _col, _series in _hifld_cols.items():
-                if _col not in _gdf.columns:
-                    _gdf[_col] = _series.values
 
-            _gdf.to_parquet(_out, index=False)
+            # Build a new GeoDataFrame with ONLY HIFLD schema fields + geometry
+            _hifld_df = _pd.DataFrame({col: series.values for col, series in _hifld_cols.items()})
+            _hifld_gdf = gpd.GeoDataFrame(_hifld_df, geometry=_gdf.geometry.values, crs="EPSG:4326")
+            _hifld_gdf.to_parquet(_out, index=False)
+
             _n = len(_gdf)
             _hifld_n = int((_gdf["source_provenance"].str.contains("hifld", na=False)).sum()) if "source_provenance" in _gdf.columns else 0
             _cms_n = int((_gdf["cms_bed_cnt"] > 0).sum()) if "cms_bed_cnt" in _gdf.columns else 0
-            _beds_n = int(_gdf["BEDS"].notna().sum()) if "BEDS" in _gdf.columns else 0
-            _trauma_n = int(_gdf["TRAUMA"].notna().sum()) if "TRAUMA" in _gdf.columns else 0
-            print(f"  hifld_hospitals.parquet — {_n:,} rows ({_hifld_n} HIFLD-boosted, {_cms_n} CMS bed counts, {_beds_n} with BEDS, {_trauma_n} with TRAUMA)")
+            _beds_n = int(_hifld_gdf["BEDS"].notna().sum())
+            _trauma_n = int(_hifld_gdf["TRAUMA"].notna().sum())
+            print(f"  hifld_hospitals.parquet — {_n:,} rows × {len(_hifld_gdf.columns)} cols (HIFLD schema only; {_hifld_n} HIFLD-boosted, {_cms_n} CMS bed counts, {_beds_n} with BEDS, {_trauma_n} with TRAUMA)")
             hifld_hospitals_result = mo.callout(
                 mo.md(
-                    f"✅ **`hifld_hospitals.parquet` written** — {_n:,} rows "
-                    f"(Hospitals only · points only · epa_frs-only excluded; "
+                    f"✅ **Hospital gold outputs written** — {_n:,} rows "
+                    f"(Hospitals only · points only · epa_frs-only excluded)  \n"
+                    f"• `wide_hospitals.parquet` — {len(_gdf.columns)} cols (OSM-focused, all attrs)  \n"
+                    f"• `hifld_hospitals.parquet` — {len(_hifld_gdf.columns)} cols (HIFLD schema only; "
                     f"{_hifld_n} HIFLD-confirmed; {_cms_n} CMS bed counts; "
-                    f"{_beds_n} with BEDS; {_trauma_n} with TRAUMA level)."
+                    f"{_beds_n} with BEDS; {_trauma_n} with TRAUMA level)"
                 ),
                 kind="success",
             )
         except Exception as _exc:
-            print(f"  ERROR producing hifld_hospitals.parquet: {_exc}")
+            print(f"  ERROR producing hospital gold outputs: {_exc}")
             hifld_hospitals_result = mo.callout(
-                mo.md(f"⚠️ `hifld_hospitals.parquet` failed: {_exc}"), kind="warn"
+                mo.md(f"⚠️ Hospital gold outputs failed: {_exc}"), kind="warn"
             )
 
     hifld_hospitals_result
@@ -423,14 +430,18 @@ def _(Path, cfg, gpd, mo, pd):
 
 
 @app.cell
-def _(campus_buildings_result, gold_result, hifld_hospitals_result, mo):
-    mo.vstack([
-        mo.md("## Gold Production Summary"),
-        gold_result,
-        hifld_hospitals_result,
-        campus_buildings_result,
-        mo.callout(mo.md("✅ **Flow 04 complete.** ➡ Run `flows/05_generate_tiles.py` next."), kind="success"),
-    ])
+def _(campus_buildings_result, gold_result, hifld_hospitals_result, is_script_mode, mo):
+    if is_script_mode:
+        print("Gold Production Summary")
+        print("Flow 04 complete. Run flows/05_generate_tiles.py next.")
+    else:
+        mo.vstack([
+            mo.md("## Gold Production Summary"),
+            gold_result,
+            hifld_hospitals_result,
+            campus_buildings_result,
+            mo.callout(mo.md("✅ **Flow 04 complete.** ➡ Run `flows/05_generate_tiles.py` next."), kind="success"),
+        ])
     return
 
 

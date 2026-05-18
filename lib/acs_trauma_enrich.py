@@ -55,6 +55,20 @@ def load_acs_trauma(seed_path: Path | None = None) -> pd.DataFrame:
 
     df = pd.read_parquet(seed_path)
 
+    # If the seed was written as a GeoParquet, drop the geometry column after
+    # deriving float lat/lon from it (the BallTree operates on floats only).
+    if "geometry" in df.columns:
+        try:
+            import geopandas as _gpd
+            gdf = _gpd.GeoDataFrame(df, geometry="geometry")
+            if "latitude" not in df.columns or df["latitude"].isna().all():
+                df["latitude"] = gdf.geometry.y
+            if "longitude" not in df.columns or df["longitude"].isna().all():
+                df["longitude"] = gdf.geometry.x
+        except Exception:
+            pass
+        df = df.drop(columns=["geometry"])
+
     # Normalise for matching
     for col in ("institution_name", "program_name", "city", "state", "zip_code"):
         if col in df.columns:
@@ -129,7 +143,11 @@ def build_attr_health_acs_trauma(
     if not master_file.exists():
         return _empty
 
-    master = pd.read_parquet(master_file)
+    try:
+        import geopandas as _gpd
+        master = _gpd.read_parquet(master_file)
+    except Exception:
+        master = pd.read_parquet(master_file)
     if "tmp_osm_layer" in master.columns:
         health = master[master["tmp_osm_layer"] == "health"].copy()
     else:
@@ -174,6 +192,13 @@ def build_attr_health_acs_trauma(
 
     poi_coords_rad = np.column_stack([np.radians(poi_lats), np.radians(poi_lons)])
 
+    # Drop POIs with NaN coordinates (invalid geometry) — BallTree rejects them
+    valid_mask = np.isfinite(poi_lats) & np.isfinite(poi_lons)
+    if not valid_mask.any():
+        return _empty
+    poi_coords_rad = poi_coords_rad[valid_mask]
+    health_valid = health.iloc[np.where(valid_mask)[0]].reset_index(drop=True)
+
     # Query: indices and distances within radius
     indices, distances = tree.query_radius(
         poi_coords_rad, r=radius_rad, return_distance=True, sort_results=True
@@ -181,16 +206,16 @@ def build_attr_health_acs_trauma(
 
     # Build name lookup for POIs
     for col in ("name", "display_name"):
-        if col not in health.columns:
-            health[col] = ""
+        if col not in health_valid.columns:
+            health_valid[col] = ""
         else:
-            health[col] = health[col].fillna("").astype(str)
-    health["_name_norm"] = health["name"].apply(_normalize_name)
-    _empty_nm = health["_name_norm"] == ""
-    health.loc[_empty_nm, "_name_norm"] = health.loc[_empty_nm, "display_name"].apply(_normalize_name)
+            health_valid[col] = health_valid[col].fillna("").astype(str)
+    health_valid["_name_norm"] = health_valid["name"].apply(_normalize_name)
+    _empty_nm = health_valid["_name_norm"] == ""
+    health_valid.loc[_empty_nm, "_name_norm"] = health_valid.loc[_empty_nm, "display_name"].apply(_normalize_name)
 
     results: list[dict] = []
-    health_vals = health[["lifeline_id", "_name_norm"]].values
+    health_vals = health_valid[["lifeline_id", "_name_norm"]].values
 
     for i, (cand_indices, cand_dists) in enumerate(zip(indices, distances)):
         if len(cand_indices) == 0:

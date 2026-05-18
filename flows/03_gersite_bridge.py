@@ -81,7 +81,7 @@ def _(FlowParams, mo):
 def _(FlowParams, mo):
     import sys as _sys
     is_script_mode = mo.app_meta().mode == "script"
-    if is_script_mode and (not mo.cli_args() or "help" in mo.cli_args()):
+    if is_script_mode and "help" in mo.cli_args():
         print("Usage: marimo run flows/03_gersite_bridge.py -- [options]\n")
         for _name, _field in FlowParams.model_fields.items():
             _default = f"(default: {_field.default})" if _field.default is not None else "(required)"
@@ -186,12 +186,16 @@ def _(Path, cfg, flow_params, gpd, mo, nearest_neighbor_join, pd):
 
 
 @app.cell
-def _(bridge_result, mo):
-    mo.vstack([
-        mo.md("## Bridge Summary"),
-        bridge_result,
-        mo.callout(mo.md("✅ **Flow 03 complete.** ➡ Run `flows/04_gold_production.py` next."), kind="success"),
-    ])
+def _(bridge_result, is_script_mode, mo):
+    if is_script_mode:
+        print("Bridge Summary")
+        print("Flow 03 complete. Run flows/04_gold_production.py next.")
+    else:
+        mo.vstack([
+            mo.md("## Bridge Summary"),
+            bridge_result,
+            mo.callout(mo.md("✅ **Flow 03 complete.** ➡ Run `flows/04_gold_production.py` next."), kind="success"),
+        ])
     return
 
 

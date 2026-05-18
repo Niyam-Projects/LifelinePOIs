@@ -18,17 +18,33 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 
 def _normalize_name(name: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace for fuzzy comparison."""
+    """Normalize hospital names for fuzzy matching.
+    - Lowercase, strip punctuation, collapse whitespace
+    - Remove/reorder common words (e.g., 'Hospital' at start/end)
+    - Remove trailing 'INC'
+    - Expand abbreviations (e.g., 'CTR' → 'Center')
+    """
     if not name or not isinstance(name, str):
         return ""
     name = name.lower()
     name = re.sub(r"[^a-z0-9 ]", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
+    # Remove trailing 'inc'
+    name = re.sub(r" inc$", "", name)
+    # Expand abbreviations
+    abbr = {"ctr": "center", "med": "medical", "univ": "university", "dept": "department"}
+    words = [abbr.get(w, w) for w in name.split()]
+    name = " ".join(words)
+    # Remove/reorder 'hospital' at start/end
+    if name.startswith("hospital "):
+        name = name[len("hospital "):]
+    if name.endswith(" hospital"):
+        name = name[:-len(" hospital")]
+    name = name.strip()
     return name
 
 
@@ -80,13 +96,21 @@ def build_attr_health_hifld(
     ``lifeline_id``-keyed attribute DataFrame ready to write as
     ``silver/attr_health_hifld_attrs.parquet``.
 
+    Matching uses a vectorized tiered-merge strategy instead of row iteration:
+
+    * **Tier 1** — merge on ``(state, zip)``   → tightest candidates
+    * **Tier 2** — merge on ``(state, city)``  → city fallback for zip-miss POIs
+    * **Tier 3** — merge on ``state`` only     → last resort for the remainder
+
+    Fuzzy name scoring runs over all candidate pairs in one vectorized pass
+    using rapidfuzz; the best score wins per health POI.
+
     Parameters
     ----------
     silver_path:
         Path to the silver data directory (contains ``lifeline_points.parquet``).
     bronze_path:
-        Path to the bronze data directory (contains
-        ``hifld/hospitals.parquet``).
+        Path to the bronze data directory (contains ``hifld/hospitals.parquet``).
     threshold:
         Minimum rapidfuzz ``token_sort_ratio`` score (0–1) to accept a match.
 
@@ -127,7 +151,7 @@ def build_attr_health_hifld(
     if len(health) == 0:
         return _empty
 
-    # Normalise silver address fields
+    # ── Prepare health lookup columns ─────────────────────────────────────
     for col in ("addr:state", "addr:postcode", "addr:city", "name", "display_name"):
         if col not in health.columns:
             health[col] = ""
@@ -143,74 +167,112 @@ def build_attr_health_hifld(
         health.loc[_empty_name, "display_name"].apply(_normalize_name)
     )
 
-    # Load HIFLD hospitals bronze
+    # ── Load HIFLD bronze ─────────────────────────────────────────────────
     hifld = load_hifld_hospitals(bronze_path)
     if len(hifld) == 0:
         return _empty
 
-    # Drop HIFLD records with no trauma info to keep (we still match all, but
-    # only keep results where at least one useful attribute is non-null / non-empty)
-    SKIP_TRAUMA = {"NOT AVAILABLE", "N/A", "NONE", "", "NAN", "NONE LISTED"}
+    # Rename HIFLD's normalised name to avoid collision with health's column.
+    hifld = hifld.rename(columns={"_name_norm": "_hifld_name"})
 
-    results: list[dict] = []
+    # Only bring the columns needed for merging and result assembly.
+    _attr_cols = [c for c in ("TRAUMA", "HELIPAD", "OWNER", "TYPE") if c in hifld.columns]
+    _merge_cols = ["_state", "_zip5", "_city_norm", "_hifld_name"] + _attr_cols
+    _merge_cols = [c for c in _merge_cols if c in hifld.columns]
+    hifld_m = hifld[_merge_cols]
 
-    for row in health.itertuples(index=False):
-        lid = row.lifeline_id
-        state = row._state   # noqa: SLF001
-        zip5 = row._zip5     # noqa: SLF001
-        city = row._city     # noqa: SLF001
-        name_norm = row._name_norm  # noqa: SLF001
+    # Narrow health to the columns used in merges.
+    health_m = health[["lifeline_id", "_name_norm", "_state", "_zip5", "_city"]].copy()
+    # Drop health POIs with no name (nothing to fuzzy-match against).
+    health_m = health_m[health_m["_name_norm"] != ""].copy()
 
-        if not name_norm:
-            continue
-
-        candidates = hifld[hifld["_state"] == state] if state else hifld
-
-        if zip5 and len(zip5) == 5:
-            zip_cands = candidates[candidates["_zip5"] == zip5]
-            if len(zip_cands) > 0:
-                candidates = zip_cands
-            elif city:
-                city_cands = candidates[candidates["_city_norm"] == city]
-                candidates = city_cands if len(city_cands) > 0 else candidates
-
-        if len(candidates) == 0:
-            continue
-
-        scores = np.array([
-            fuzz.token_sort_ratio(name_norm, cn) / 100.0
-            for cn in candidates["_name_norm"]
-        ])
-        best_idx = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
-
-        if best_score < threshold:
-            continue
-
-        best = candidates.iloc[best_idx]
-
-        trauma = str(best.get("TRAUMA", "") or "").strip()
-        helipad = str(best.get("HELIPAD", "") or "").strip()
-        owner = str(best.get("OWNER", "") or "").strip()
-        htype = str(best.get("TYPE", "") or "").strip()
-
-        # Skip records that bring no useful data
-        trauma_clean = trauma.upper() if trauma else ""
-        if trauma_clean in SKIP_TRAUMA and not helipad and not owner and not htype:
-            continue
-
-        results.append({
-            "lifeline_id": lid,
-            "hifld_trauma": trauma if trauma_clean not in SKIP_TRAUMA else None,
-            "hifld_helipad": helipad if helipad not in ("", "N", "nan") else None,
-            "hifld_owner": owner or None,
-            "hifld_hospital_type": htype or None,
-            "hifld_match_distance_m": round(best_score, 4),  # repurpose field as match score
-        })
-
-    if not results:
+    if len(health_m) == 0:
         return _empty
 
-    attr = pd.DataFrame(results)
-    attr = attr.sort_values("hifld_match_distance_m", ascending=False).drop_duplicates("lifeline_id")
-    return attr.reset_index(drop=True)
+    SKIP_TRAUMA = {"NOT AVAILABLE", "N/A", "NONE", "", "NAN", "NONE LISTED"}
+
+    # ── Tier 1: state + ZIP ───────────────────────────────────────────────
+    h_zip = health_m[health_m["_zip5"].str.len() == 5]
+    tier1 = h_zip.merge(hifld_m, on=["_state", "_zip5"], how="inner")
+
+    # ── Tier 2: state + city (zip had no match) ───────────────────────────
+    zip_matched = set(tier1["lifeline_id"])
+    h_city = h_zip[
+        ~h_zip["lifeline_id"].isin(zip_matched) & (h_zip["_city"] != "")
+    ]
+    if "_city_norm" in hifld_m.columns and len(h_city):
+        tier2 = h_city.merge(
+            hifld_m, left_on=["_state", "_city"], right_on=["_state", "_city_norm"], how="inner"
+        )
+    else:
+        tier2 = pd.DataFrame(columns=tier1.columns)
+
+    # ── Tier 3: state only (no zip or zip+city both missed) ───────────────
+    city_matched = zip_matched | set(tier2["lifeline_id"])
+    h_state = health_m[
+        ~health_m["lifeline_id"].isin(city_matched) & (health_m["_state"] != "")
+    ]
+    tier3 = h_state.merge(hifld_m, on="_state", how="inner") if len(h_state) else pd.DataFrame(columns=tier1.columns)
+
+    # ── Score all candidate pairs at once ─────────────────────────────────
+    candidates = pd.concat([tier1, tier2, tier3], ignore_index=True)
+    if len(candidates) == 0:
+        return _empty
+
+    hifld_names = candidates["_hifld_name"].fillna("").tolist()
+    health_names = candidates["_name_norm"].tolist()
+    candidates["_score"] = [
+        fuzz.token_sort_ratio(a, b) / 100.0
+        for a, b in zip(health_names, hifld_names)
+    ]
+
+    # Filter by threshold and keep best match per POI.
+    candidates = candidates[candidates["_score"] >= threshold]
+    if len(candidates) == 0:
+        return _empty
+
+    best = (
+        candidates
+        .sort_values("_score", ascending=False)
+        .drop_duplicates("lifeline_id")
+        .reset_index(drop=True)
+    )
+
+    # ── Build result with vectorized string ops ───────────────────────────
+    def _strcol(df: pd.DataFrame, name: str) -> pd.Series:
+        if name in df.columns:
+            return df[name].fillna("").astype(str).str.strip()
+        return pd.Series("", index=df.index)
+
+    trauma = _strcol(best, "TRAUMA")
+    helipad = _strcol(best, "HELIPAD")
+    owner = _strcol(best, "OWNER")
+    htype = _strcol(best, "TYPE")
+    trauma_upper = trauma.str.upper()
+
+    # Drop rows that carry no useful data.
+    has_useful = ~(
+        trauma_upper.isin(SKIP_TRAUMA)
+        & helipad.isin(("", "N", "nan"))
+        & (owner == "")
+        & (htype == "")
+    )
+    best = best[has_useful].reset_index(drop=True)
+    if len(best) == 0:
+        return _empty
+
+    trauma = trauma[has_useful].reset_index(drop=True)
+    helipad = helipad[has_useful].reset_index(drop=True)
+    owner = owner[has_useful].reset_index(drop=True)
+    htype = htype[has_useful].reset_index(drop=True)
+    trauma_upper = trauma_upper[has_useful].reset_index(drop=True)
+
+    result = pd.DataFrame({
+        "lifeline_id": best["lifeline_id"].values,
+        "hifld_trauma": trauma.where(~trauma_upper.isin(SKIP_TRAUMA)).values,
+        "hifld_helipad": helipad.where(~helipad.isin(("", "N", "nan"))).values,
+        "hifld_owner": owner.where(owner != "").values,
+        "hifld_hospital_type": htype.where(htype != "").values,
+        "hifld_match_distance_m": best["_score"].values,
+    })
+    return result.reset_index(drop=True)

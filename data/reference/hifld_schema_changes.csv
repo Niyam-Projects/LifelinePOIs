@@ -1,0 +1,59 @@
+layer,change_type,field_name,source_field,reason
+all,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+all,transformed,geometry,geometry,WKB binary blob replaced with GeoParquet-standard Shapely Point geometry (EPSG:4326)
+all,added,lifeline_id,,UUID5(hifld/{layer}/{id_field}) — stable deterministic row identifier for cross-layer joins
+all,added,fema_id,,UUID from FEMA Community Lifeline taxonomy (geocube authoritative ID)
+all,added,lifeline_component,,FEMA lifeline component label (e.g. "Energy" / "Communications")
+all,added,lifeline_subcomponent,,FEMA lifeline subcomponent label (e.g. "Fuel" / "Infrastructure")
+all,added,lifeline_category,,FEMA lifeline category label (e.g. "Petroleum Refineries" / "Wireless")
+all,added,display_name,,Primary human-readable name derived from layer-specific source field (see per-layer rows)
+all,added,confidence_score,,1.0 when OSM-matched within 50 m; 0.85 for HIFLD-only rows
+all,added,confidence_tier,,Always "HIGH" — HIFLD is an authoritative government source
+all,added,source_provenance,,"hifld+osm" when matched to an OSM silver point; "hifld" otherwise
+all,added,osm_lifeline_id,,UUID of the nearest matched OSM silver point within 50 m (None if no match)
+lm_commercial,removed,bpd_metadata,bpd_metadata,Internal BPD catalog metadata — not user-facing; dropped before gold distribution
+lm_commercial,removed,type,type,Always "Feature" from GeoJSON origin — redundant after conversion to GeoParquet
+lm_commercial,removed,properties,properties,Dict column fully flattened — all keys promoted to top-level columns; original struct dropped
+lm_commercial,transformed,properties.*,properties,All property dict keys (AllStruc Callsign FID LatDeg LatDir LatMin LatSec LicStatus Licensee LocAddr LocCity LocCounty LocNum LocState LonDeg LonDir LonMin LonSec Nepa QZone londec latdec) promoted to top-level columns
+lm_private,removed,bpd_metadata,bpd_metadata,Internal BPD catalog metadata — not user-facing; dropped before gold distribution
+lm_private,removed,type,type,Always "Feature" from GeoJSON origin — redundant after conversion to GeoParquet
+lm_private,removed,properties,properties,Dict column fully flattened — all keys promoted to top-level columns; original struct dropped
+lm_private,transformed,properties.*,properties,All property dict keys (AllStruc Callsign FID LatDeg LatDir LatMin LatSec LicStatus Licensee LocAddr LocCity LocCounty LocNum LocState LonDeg LonDir LonMin LonSec Nepa QZone londec latdec) promoted to top-level columns
+microwave,removed,bpd_metadata,bpd_metadata,Internal BPD catalog metadata — not user-facing; dropped before gold distribution
+microwave,removed,type,type,Always "Feature" from GeoJSON origin — redundant after conversion to GeoParquet
+microwave,removed,properties,properties,Dict column fully flattened — all keys promoted to top-level columns; original struct dropped
+microwave,transformed,properties.*,properties,All property dict keys (AllStruc Callsign FID LatDeg LatDir LatMin LatSec LicStatus Licensee LocAddr LocCity LocCounty LocNum LocState LonDeg LonDir LonMin LonSec Nepa QZone londec latdec) promoted to top-level columns
+wastewater_treatment_plants,removed,bpd_metadata,bpd_metadata,Internal BPD catalog metadata — not user-facing; dropped before gold distribution
+wastewater_treatment_plants,removed,type,type,Always "Feature" from GeoJSON origin — redundant after conversion to GeoParquet
+wastewater_treatment_plants,removed,properties,properties,Dict column fully flattened — all keys promoted to top-level columns; original struct dropped
+wastewater_treatment_plants,transformed,properties.*,properties,"All property dict keys (OBJECTID NPDES_ID CWP_NAME CWP_MAJOR_MINOR_STATUS CWP_FACILITY_TYPE_INDICATOR CWP_CITY CWP_STATE CWP_STREET CWP_ZIP CWP_CURRENT_VIOL REGISTRY_ID FAC_LONG FAC_LAT) promoted to top-level columns"
+cellular,added,display_name,,Sourced from Licensee column — FCC-registered licensee name
+lm_commercial,added,display_name,,Sourced from Licensee column — FCC-registered licensee name
+lm_private,added,display_name,,Sourced from Licensee column — FCC-registered licensee name
+microwave,added,display_name,,Sourced from Licensee column — FCC-registered licensee name
+lng_terminals,added,display_name,,Sourced from Facility column — EIA facility name
+petroleum_refineries,added,display_name,,Sourced from Site column — EIA site name
+wastewater_treatment_plants,added,display_name,,Sourced from CWP_NAME column — EPA ECHO clean water program facility name
+cellular,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+cellular,removed,geometry,geometry,WKB blob replaced — see Transformed row
+cellular,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from latdec/londec columns
+lng_terminals,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+lng_terminals,removed,geometry,geometry,WKB blob replaced — see Transformed row
+lng_terminals,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from Latitude/Longitude columns
+petroleum_refineries,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+petroleum_refineries,removed,geometry,geometry,WKB blob replaced — see Transformed row
+petroleum_refineries,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from Latitude/Longitude columns
+lm_commercial,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+lm_commercial,removed,geometry,geometry,WKB blob replaced — see Transformed row
+lm_commercial,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from properties.londec/properties.latdec
+lm_private,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+lm_private,removed,geometry,geometry,WKB blob replaced — see Transformed row
+lm_private,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from properties.londec/properties.latdec
+microwave,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+microwave,removed,geometry,geometry,WKB blob replaced — see Transformed row
+microwave,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from properties.londec/properties.latdec
+wastewater_treatment_plants,removed,bbox,bbox,Redundant — GeoParquet provides native spatial indexing via Parquet metadata
+wastewater_treatment_plants,removed,geometry,geometry,WKB blob replaced — see Transformed row
+wastewater_treatment_plants,transformed,geometry,geometry,WKB binary Point replaced with GeoParquet-standard Shapely Point (EPSG:4326) built from properties.FAC_LONG/properties.FAC_LAT (uppercase)
+wastewater_treatment_plants,transformed,lon_field,properties.fac_long,Corrected field reference from lowercase properties.fac_long to uppercase properties.FAC_LONG matching actual data schema
+wastewater_treatment_plants,transformed,lat_field,properties.fac_lat,Corrected field reference from lowercase properties.fac_lat to uppercase properties.FAC_LAT matching actual data schema

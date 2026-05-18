@@ -1,0 +1,93 @@
+code_type,code,fema_id,lifeline_component,lifeline_subcomponent,lifeline_category,tier,boost,naics_sector,bls_title
+naics,221111,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Hydroelectric Power Generation
+naics,221112,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Fossil Fuel Electric Power Generation
+naics,221113,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Nuclear Electric Power Generation
+naics,221114,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Solar Electric Power Generation
+naics,221115,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Wind Electric Power Generation
+naics,221116,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Geothermal Electric Power Generation
+naics,221117,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Biomass Electric Power Generation
+naics,221118,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Other Electric Power Generation
+naics,221119,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Other Electric Power Generation
+naics,221121,019dab83-9fc6-738e-bd1c-343f7109bd61,Energy,Power Grid,Electric Power Transmission,1,0.25,22,Electric Bulk Power Transmission and Control
+naics,221122,019dab83-9fc6-7ccd-b463-7ff8de4f8991,Energy,Power Grid,Electric Power Distribution,1,0.25,22,Electric Power Distribution
+naics,221210,019dab83-9fc6-76dc-a6ee-6b165a228bab,Energy,Power Grid,Natural Gas Distribution,1,0.25,22,Natural Gas Distribution
+naics,486210,019dab83-9fc6-7513-9544-94b9deddb7c8,Energy,Fuel,Pipelines (Natural Gas),1,0.25,48,Pipeline Transportation of Natural Gas
+naics,486110,019dab83-9fc6-7ad6-8994-6a6dd068e851,Energy,Fuel,Pipelines (Crude Oil),1,0.25,48,Pipeline Transportation of Crude Oil
+naics,486910,019dab83-9fc6-7bff-a0cd-99e17eb89f10,Energy,Fuel,Pipelines (Petroleum),2,0.15,48,Other Pipeline Transportation
+naics,221320,019dab83-9fc6-7d06-a032-0e5d620955b1,Water Systems,Wastewater Management,Wastewater Systems,1,0.25,22,Sewage Treatment Facilities
+naics,324110,019dab83-9fc6-7537-a91a-d01fc230dc8e,Energy,Fuel,Petroleum Refineries,1,0.25,31,Petroleum Refineries
+naics,493120,019dab83-9fc6-778c-8a6e-8f16938837eb,Energy,Fuel,Fuel Storage and Terminals,2,0.15,48,Refrigerated Warehousing and Storage
+naics,562212,019dab83-9fc6-7049-979b-090483b917a9,Hazardous Materials,Faculties,Solid Waste Landfill,2,0.15,56,Solid Waste Landfill
+naics,562910,019dab83-9fc6-77ea-a815-10ff25be793f,Hazardous Materials,Faculties,Waste Treatment and Disposal,3,0.05,56,Remediation Services
+naics,562998,019dab83-9fc6-77ea-a815-10ff25be793f,Hazardous Materials,Faculties,Waste Treatment and Disposal,3,0.05,56,All Other Miscellaneous Waste Management Services
+naics,211111,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,2,0.15,21,Crude Petroleum and Natural Gas Extraction
+naics,211112,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,2,0.15,21,Natural Gas Liquid Extraction
+naics,211120,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,2,0.15,21,Crude Petroleum Extraction
+naics,211130,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,2,0.15,21,Natural Gas Extraction
+naics,213112,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,3,0.05,21,Support Activities for Oil and Gas Operations
+naics,424710,019dab83-9fc6-778c-8a6e-8f16938837eb,Energy,Fuel,Fuel Storage and Terminals,1,0.25,42,Petroleum Bulk Stations and Terminals
+naics,424720,019dab83-9fc6-778c-8a6e-8f16938837eb,Energy,Fuel,Fuel Storage and Terminals,2,0.15,42,Petroleum and Petroleum Products Merchant Wholesalers
+naics,221310,019dab83-9fc6-719b-80b9-56c4fc609490,Water Systems,Potable Water Infastrucutre,Potable Water Infastructure,1,0.25,22,Water Supply and Irrigation Systems
+naics,622110,019dab83-9fc6-7140-890f-8e81f3409bea,Health and Medical,Medical Care,Hospitals,1,0.25,62,General Medical and Surgical Hospitals
+naics,622210,019dab83-9fc6-7e50-bb48-c795e20f5af7,Health and Medical,Medical Care,Specialty Hospitals,2,0.15,62,Psychiatric and Substance Abuse Hospitals
+naics,622310,019dab83-9fc6-7e50-bb48-c795e20f5af7,Health and Medical,Medical Care,Specialty Hospitals,2,0.15,62,Specialty Hospitals
+naics,621111,019dab83-9fc6-79b0-b979-ff2f037206f7,Health and Medical,Public Health,Outpatient Care Center,2,0.15,62,Offices of Physicians (except Mental Health)
+naics,446110,019dab83-9fc6-73d2-967c-1a5ec3c2f82f,Health and Medical,Medical Care,Pharmacies,2,0.15,44,Pharmacies and Drug Stores
+naics,325412,019dab83-9fc6-7be5-8cde-c8bc72bb3b91,Health and Medical,Medical Supply Chain,Pharmaceutical Manufacturing,3,0.05,31,Pharmaceutical Preparation Manufacturing
+naics,621493,019dab83-9fc6-7a4c-b2a7-f2843b5e872c,Health and Medical,Medical Care,Emergency Medical Services,1,0.25,62,Freestanding Ambulatory Surgical and Emergency Centers
+naics,621999,019dab83-9fc6-7a6b-a432-3a43e680ea56,Health and Medical,Medical Care,Urgent Care,2,0.15,62,All Other Miscellaneous Ambulatory Health Care Services
+naics,621910,019dab83-9fc6-7a4c-b2a7-f2843b5e872c,Health and Medical,Medical Care,Emergency Medical Services,2,0.15,62,Ambulance Services
+naics,928110,019dab83-9fc6-7b13-b675-42a19b3d6588,Safety and Security,Law Enforcement/Security,Police Stations,1,0.25,92,National Security
+naics,922120,019dab83-9fc6-7b13-b675-42a19b3d6588,Safety and Security,Law Enforcement/Security,Police Stations,1,0.25,92,Police Protection
+naics,922160,019dab83-9fc6-78ff-addd-804a4bef957b,Safety and Security,Fire Service,Fire Stations,1,0.25,92,Fire Protection
+naics,517210,019dab83-9fc6-7d7c-a2ca-a5ac8500770b,Communications,Infrastructure,Wireless,1,0.25,51,Wireless Telecommunications Carriers (except Satellite)
+naics,517211,019dab83-9fc6-7d7c-a2ca-a5ac8500770b,Communications,Infrastructure,Wireless,1,0.25,51,Paging
+naics,517212,019dab83-9fc6-7d7c-a2ca-a5ac8500770b,Communications,Infrastructure,Wireless,1,0.25,51,Cellular and Other Wireless Telecommunications
+naics,517410,019dab83-9fc6-74f4-926c-8b4efa427b48,Communications,Infrastructure,Satellite,2,0.15,51,Satellite Telecommunications
+naics,517110,019dab83-9fc6-7650-a051-a502b3f05417,Communications,Infrastructure,Cable Systems and Wireline,1,0.25,51,Wired Telecommunications Carriers
+naics,517311,019dab83-9fc6-7650-a051-a502b3f05417,Communications,Infrastructure,Cable Systems and Wireline,1,0.25,51,Wired Telecommunications Carriers
+naics,237130,019dab83-9fc6-7650-a051-a502b3f05417,Communications,Infrastructure,Cable Systems and Wireline,3,0.05,23,Power and Communication Line and Related Structures Construction
+naics,488119,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,1,0.25,48,Other Airport Operations
+naics,488111,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,1,0.25,48,Air Traffic Control
+naics,481111,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,2,0.15,48,Scheduled Passenger Air Transportation
+naics,481112,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,2,0.15,48,Scheduled Freight Air Transportation
+naics,484110,019dab83-9fc6-741b-989f-728bf7fcd0c2,Transportation,Truck Transportation,Truck Transportation,3,0.05,48,"General Freight Trucking, Local"
+naics,484121,019dab83-9fc6-741b-989f-728bf7fcd0c2,Transportation,Truck Transportation,Truck Transportation,3,0.05,48,"General Freight Trucking, Long-Distance, Truckload"
+naics,484122,019dab83-9fc6-741b-989f-728bf7fcd0c2,Transportation,Truck Transportation,Truck Transportation,3,0.05,48,"General Freight Trucking, Long-Distance, Less Than Truckload"
+naics,482111,019dab83-9fc6-72f7-909b-5097fcbfe5eb,Transportation,Railway,Rail Transportation,1,0.25,48,Line-Haul Railroads
+naics,482112,019dab83-9fc6-72f7-909b-5097fcbfe5eb,Transportation,Railway,Rail Transportation,2,0.15,48,Short Line Railroads
+sic,4911,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,1,0.25,22,Electric Services
+sic,4931,019dab83-9fc6-74b4-a269-c9476772661a,Energy,Power Grid,"Electric Power Generation, Transmission and Distribution",1,0.25,22,Electric and Other Services Combined
+sic,4939,019dab83-9fc6-74b4-a269-c9476772661a,Energy,Power Grid,"Electric Power Generation, Transmission and Distribution",2,0.15,22,"Combination Utilities, NEC"
+sic,4922,019dab83-9fc6-7513-9544-94b9deddb7c8,Energy,Fuel,Pipelines (Natural Gas),1,0.25,22,Natural Gas Transmission
+sic,4923,019dab83-9fc6-76dc-a6ee-6b165a228bab,Energy,Power Grid,Natural Gas Distribution,1,0.25,22,Natural Gas Transmission and Distribution
+sic,4924,019dab83-9fc6-76dc-a6ee-6b165a228bab,Energy,Power Grid,Natural Gas Distribution,1,0.25,22,Natural Gas Distribution
+sic,4991,019dab83-9fc6-7505-a0f1-977bd1b5531a,Energy,Power Grid,Electric Power Generation,2,0.15,22,Cogeneration Services and Small Power Producers
+sic,1311,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,2,0.15,21,Crude Petroleum and Natural Gas
+sic,1321,019dab83-9fc6-7c8f-8178-47325f6e4ceb,Energy,Fuel,Oil and Gas Extraction,2,0.15,21,Natural Gas Liquids
+sic,2911,019dab83-9fc6-7537-a91a-d01fc230dc8e,Energy,Fuel,Petroleum Refineries,1,0.25,31,Petroleum Refining
+sic,5171,019dab83-9fc6-778c-8a6e-8f16938837eb,Energy,Fuel,Fuel Storage and Terminals,1,0.25,51,Petroleum Bulk Stations and Terminals
+sic,5172,019dab83-9fc6-778c-8a6e-8f16938837eb,Energy,Fuel,Fuel Storage and Terminals,2,0.15,51,Petroleum and Petroleum Products Wholesalers
+sic,4953,019dab83-9fc6-7049-979b-090483b917a9,Hazardous Materials,Faculties,Solid Waste Landfill,2,0.15,49,Refuse Systems
+sic,9511,019dab83-9fc6-77ea-a815-10ff25be793f,Hazardous Materials,Faculties,Waste Treatment and Disposal,3,0.05,92,Air and Water Resource and Solid Waste Management
+sic,4941,019dab83-9fc6-719b-80b9-56c4fc609490,Water Systems,Potable Water Infastrucutre,Potable Water Infastructure,1,0.25,22,Water Supply
+sic,4952,019dab83-9fc6-7d06-a032-0e5d620955b1,Water Systems,Wastewater Management,Wastewater Systems,1,0.25,22,Sewerage Systems
+sic,4959,019dab83-9fc6-7d06-a032-0e5d620955b1,Water Systems,Wastewater Management,Wastewater Systems,2,0.15,22,"Sanitary Services, NEC"
+sic,8062,019dab83-9fc6-7140-890f-8e81f3409bea,Health and Medical,Medical Care,Hospitals,1,0.25,62,General Medical and Surgical Hospitals
+sic,8063,019dab83-9fc6-7e50-bb48-c795e20f5af7,Health and Medical,Medical Care,Specialty Hospitals,2,0.15,62,Psychiatric Hospitals
+sic,8069,019dab83-9fc6-7e50-bb48-c795e20f5af7,Health and Medical,Medical Care,Specialty Hospitals,2,0.15,62,"Specialty Hospitals, Except Psychiatric"
+sic,5912,019dab83-9fc6-73d2-967c-1a5ec3c2f82f,Health and Medical,Medical Care,Pharmacies,2,0.15,59,Drug Stores and Proprietary Stores
+sic,8011,019dab83-9fc6-79b0-b979-ff2f037206f7,Health and Medical,Public Health,Outpatient Care Center,2,0.15,62,Offices and Clinics of Doctors of Medicine
+sic,8049,019dab83-9fc6-79b0-b979-ff2f037206f7,Health and Medical,Public Health,Outpatient Care Center,3,0.05,62,Offices and Clinics of Other Health Practitioners
+sic,9221,019dab83-9fc6-7b13-b675-42a19b3d6588,Safety and Security,Law Enforcement/Security,Police Stations,1,0.25,92,Police Protection
+sic,9229,019dab83-9fc6-77c8-b850-2bd3039d6ce1,Safety and Security,Law Enforcement/Security,Correctional Facilities,2,0.15,92,"Public Order and Safety, NEC"
+sic,9224,019dab83-9fc6-78ff-addd-804a4bef957b,Safety and Security,Fire Service,Fire Stations,1,0.25,92,Fire Protection
+sic,4812,019dab83-9fc6-7d7c-a2ca-a5ac8500770b,Communications,Infrastructure,Wireless,1,0.25,48,Radiotelephone Communications
+sic,4813,019dab83-9fc6-7650-a051-a502b3f05417,Communications,Infrastructure,Cable Systems and Wireline,1,0.25,48,Telephone Communications (Except Radiotelephone)
+sic,4899,019dab83-9fc6-7650-a051-a502b3f05417,Communications,Infrastructure,Cable Systems and Wireline,2,0.15,48,"Communications Services, NEC"
+sic,4581,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,1,0.25,45,"Airports, Flying Fields, and Airport Terminal Services"
+sic,4512,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,2,0.15,48,"Air Transportation, Scheduled"
+sic,4522,019dab83-9fc6-7572-8e8c-7f20604286db,Transportation,Aviation,Air Transportation,2,0.15,48,"Air Transportation, Nonscheduled"
+sic,4213,019dab83-9fc6-741b-989f-728bf7fcd0c2,Transportation,Truck Transportation,Truck Transportation,3,0.05,48,"Trucking, Except Local"
+sic,4011,019dab83-9fc6-72f7-909b-5097fcbfe5eb,Transportation,Railway,Rail Transportation,1,0.25,40,"Railroads, Line-Haul Operating"
+sic,4013,019dab83-9fc6-72f7-909b-5097fcbfe5eb,Transportation,Railway,Rail Transportation,2,0.15,40,Railroad Switching and Terminal Establishments

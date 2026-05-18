@@ -75,7 +75,7 @@ def _(mo):
 def _(FlowParams, mo):
     import sys as _sys
     is_script_mode = mo.app_meta().mode == "script"
-    if is_script_mode and (not mo.cli_args() or "help" in mo.cli_args()):
+    if is_script_mode and "help" in mo.cli_args():
         print("Usage: marimo run flows/06_qa.py -- [options]\n")
         for _name, _field in FlowParams.model_fields.items():
             _default = f"(default: {_field.default})" if _field.default is not None else "(required)"
@@ -236,14 +236,16 @@ def _(alt, master, mo):
 
     _fema_df = (
         master.assign(
-            has_fema=master["tmp_fema_id"].notna(),
+            has_fema=master["fema_lifeline"].apply(
+                lambda x: isinstance(x, dict) and x.get("primary") is not None
+            ),
         )
         .groupby(["tmp_osm_layer", "has_fema"])
         .agg(count=("lifeline_id", "count"))
         .reset_index()
         .rename(columns={"tmp_osm_layer": "layer"})
     )
-    _fema_df["label"] = _fema_df["has_fema"].map({True: "FEMA ID assigned", False: "Unclassified"})
+    _fema_df["label"] = _fema_df["has_fema"].map({True: "FEMA lifeline assigned", False: "Unclassified"})
 
     _totals = _fema_df.groupby("layer")["count"].sum().rename("total")
     _fema_df = _fema_df.join(_totals, on="layer")
@@ -257,7 +259,7 @@ def _(alt, master, mo):
             y=alt.Y("pct:Q", title="% of Records", scale=alt.Scale(domain=[0, 100])),
             color=alt.Color(
                 "label:N",
-                scale=alt.Scale(domain=["FEMA ID assigned", "Unclassified"], range=["#2ca02c", "#d62728"]),
+                scale=alt.Scale(domain=["FEMA lifeline assigned", "Unclassified"], range=["#2ca02c", "#d62728"]),
                 title="FEMA Coverage",
             ),
             tooltip=["layer:N", "label:N", "count:Q", "pct:Q"],
@@ -308,7 +310,7 @@ def _(master, mo):
         _display_cols = [c for c in [
             "lifeline_id", "display_name", "tmp_osm_layer",
             "source_provenance", "confidence_score", "confidence_tier",
-            "tmp_lifeline_component", "tmp_lifeline_subcomponent",
+            "fema_lifeline",
             "epa_registry_id", "naics_codes", "naics_lifeline_tier",
         ] if c in _epa_pois.columns]
 
@@ -351,11 +353,13 @@ def _(master, mo):
         if _missing_h3 > 0:
             _issues.append(f"ℹ️ **{_missing_h3:,} OSM-only records** are missing `h3_index`.")
 
-    # Records with no FEMA component but OSM source (expected to have tag matches)
-    if "tmp_fema_id" in master.columns:
+    # Records with no FEMA lifeline but OSM source (expected to have tag matches)
+    if "fema_lifeline" in master.columns:
         _osm_no_fema = master[
             master["source_provenance"].fillna("").str.startswith("osm")
-            & master["tmp_fema_id"].isna()
+            & ~master["fema_lifeline"].apply(
+                lambda x: isinstance(x, dict) and x.get("primary") is not None
+            )
         ]
         if len(_osm_no_fema) > 0:
             _issues.append(
@@ -378,7 +382,7 @@ def _(master, mo):
 
     _tracked_cols = [c for c in [
         "display_name", "h3_index", "osm_category",
-        "tmp_fema_id", "tmp_lifeline_component",
+        "fema_lifeline",
         "source_provenance",
         "epa_registry_id", "naics_codes",
     ] if c in master.columns]
@@ -412,7 +416,7 @@ def _(master, mo):
     _display_cols = [c for c in [
         "lifeline_id", "tmp_osm_layer", "display_name",
         "confidence_score", "source_provenance",
-        "tmp_fema_id", "h3_index",
+        "fema_lifeline", "h3_index",
     ] if c in _low.columns]
 
     mo.vstack([
@@ -506,7 +510,7 @@ def _(Path, cfg, hifld_gdfs, mo, pd):
 
     if not _bronze_hifld.exists() or not hifld_gdfs:
         _snap_display = mo.vstack([
-            mo.md("### HIFLD Source vs Gold Comparison"),
+            mo.md("### HIFLD Gold Layer QA"),
             mo.callout(
                 mo.md("Bronze HIFLD not found or no gold layers loaded. Run Flow 01 and Flow 04 first."),
                 kind="neutral",
@@ -517,33 +521,60 @@ def _(Path, cfg, hifld_gdfs, mo, pd):
 
         _cov_rows = []
         _dropped_tables: dict[str, pd.DataFrame] = {}
-        _osm_new_tables: dict[str, pd.DataFrame] = {}
+        _osm_detail_tables: dict[str, pd.DataFrame] = {}
 
         for _lname, _gold_gdf in hifld_gdfs.items():
             _bronze_file = _bronze_hifld / f"{_lname}.parquet"
             _layer_def = cfg.hifld.layers.get(_lname)
+            _gold_n = len(_gold_gdf)
+
+            # Detect OSM-sourced gold layers (produced by pipeline, not raw HIFLD dump)
+            _is_osm_sourced = (
+                "source_provenance" in _gold_gdf.columns
+                and _gold_gdf["source_provenance"].str.startswith("osm", na=False).any()
+            )
+
+            if _is_osm_sourced:
+                # OSM-sourced layer: show pipeline stats instead of bronze-vs-gold ID comparison
+                _hifld_boosted = int(_gold_gdf["source_provenance"].str.contains("hifld", na=False).sum())
+                _boost_pct = round(100 * _hifld_boosted / _gold_n, 1) if _gold_n > 0 else 0.0
+                _bronze_n = len(pd.read_parquet(_bronze_file)) if _bronze_file.exists() else None
+                _cov_rows.append({
+                    "hifld_layer": _lname,
+                    "source": "OSM pipeline (campus collapse + HIFLD boost)",
+                    "bronze_count": _bronze_n,
+                    "gold_count": _gold_n,
+                    "hifld_boosted": _hifld_boosted,
+                    "hifld_boost_pct": _boost_pct,
+                })
+                # Show sample of HIFLD-boosted records
+                if "source_provenance" in _gold_gdf.columns:
+                    _boosted_rows = _gold_gdf[_gold_gdf["source_provenance"].str.contains("hifld", na=False)][
+                        [c for c in ["lifeline_id", "display_name", "source_provenance", "confidence_score", "confidence_tier"]
+                         if c in _gold_gdf.columns]
+                    ].head(100).reset_index(drop=True)
+                    if len(_boosted_rows) > 0:
+                        _osm_detail_tables[_lname] = _boosted_rows
+                continue
+
+            # Raw-HIFLD-sourced gold layer: original bronze-vs-gold comparison
             if not _bronze_file.exists() or _layer_def is None:
-                _cov_rows.append({"hifld_layer": _lname, "bronze_count": None,
-                                   "gold_count": len(_gold_gdf), "dropped": None,
-                                   "osm_matched": None, "osm_match_pct": None})
+                _cov_rows.append({"hifld_layer": _lname, "source": "HIFLD bronze", "bronze_count": None,
+                                   "gold_count": _gold_n, "hifld_boosted": None, "hifld_boost_pct": None})
                 continue
 
             try:
                 _bronze_df = pd.read_parquet(_bronze_file)
             except Exception:
-                _cov_rows.append({"hifld_layer": _lname, "bronze_count": "error",
-                                   "gold_count": len(_gold_gdf), "dropped": None,
-                                   "osm_matched": None, "osm_match_pct": None})
+                _cov_rows.append({"hifld_layer": _lname, "source": "HIFLD bronze", "bronze_count": "error",
+                                   "gold_count": _gold_n, "hifld_boosted": None, "hifld_boost_pct": None})
                 continue
 
             _bronze_n = len(_bronze_df)
-            _gold_n = len(_gold_gdf)
-            _dropped_n = _bronze_n - _gold_n  # records lost due to invalid coords
-
             _osm_matched = int(_gold_gdf["osm_lifeline_id"].notna().sum()) if "osm_lifeline_id" in _gold_gdf.columns else 0
             _match_pct = round(100 * _osm_matched / _gold_n, 1) if _gold_n > 0 else 0.0
 
-            # Identify which bronze records were dropped (present in bronze, missing from gold)
+            # Identify which bronze records were dropped (invalid coords)
             _id_field = _layer_def.id_field
             if _id_field in _bronze_df.columns and "lifeline_id" in _gold_gdf.columns:
                 _expected_ids = {
@@ -553,7 +584,6 @@ def _(Path, cfg, hifld_gdfs, mo, pd):
                 _gold_ids = set(_gold_gdf["lifeline_id"].dropna())
                 _missing_ids = _expected_ids - _gold_ids
                 if _missing_ids:
-                    # Map back to bronze rows (approximate: match via re-deriving id)
                     _bronze_df["_expected_lifeline_id"] = _bronze_df[_id_field].apply(
                         lambda v: str(_uuid.uuid5(_HIFLD_NS, f"hifld/{_lname}/{v}")) if pd.notna(v) else None
                     )
@@ -567,45 +597,45 @@ def _(Path, cfg, hifld_gdfs, mo, pd):
                     ]
                     _dropped_tables[_lname] = _dropped_rows[_show_cols].head(100).reset_index(drop=True)
 
-            # OSM-matched gold records (new matches since last look at source)
             if "osm_lifeline_id" in _gold_gdf.columns:
                 _osm_new = _gold_gdf[_gold_gdf["osm_lifeline_id"].notna()][
                     [c for c in ["lifeline_id", "display_name", "osm_lifeline_id", "source_provenance", "confidence_score"]
                      if c in _gold_gdf.columns]
                 ].head(100).reset_index(drop=True)
                 if len(_osm_new) > 0:
-                    _osm_new_tables[_lname] = _osm_new
+                    _osm_detail_tables[_lname] = _osm_new
 
             _cov_rows.append({
                 "hifld_layer": _lname,
+                "source": "HIFLD bronze",
                 "bronze_count": _bronze_n,
                 "gold_count": _gold_n,
-                "dropped_invalid_coords": _dropped_n,
-                "osm_matched": _osm_matched,
-                "osm_match_pct": _match_pct,
+                "hifld_boosted": _osm_matched,
+                "hifld_boost_pct": _match_pct,
             })
 
         _cov_df = pd.DataFrame(_cov_rows)
         _detail_widgets = [
-            mo.md("### HIFLD Source vs Gold Comparison"),
+            mo.md("### HIFLD Gold Layer QA"),
             mo.md(
-                "Compares raw bronze HIFLD source (`bronze/hifld/`) against generated gold layers (`gold/hifld_*.parquet`).  \n"
-                "**Dropped** = bronze records excluded from gold due to missing/invalid coordinates.  \n"
-                "**OSM matched** = gold records linked to an OSM silver point within the proximity threshold."
+                "**OSM pipeline layers** (e.g. `hospitals`): gold is derived from OSM+campus collapse+HIFLD boost — "
+                "`hifld_boost_pct` = % of OSM records confirmed by a nearby HIFLD point.  \n"
+                "**HIFLD bronze layers** (e.g. `cellular`, `microwave`): gold is derived from raw HIFLD bronze — "
+                "`hifld_boost_pct` = % of HIFLD records matched to an OSM silver point."
             ),
             mo.ui.table(_cov_df),
         ]
 
         for _lname in sorted(_dropped_tables):
             _detail_widgets += [
-                mo.md(f"#### `{_lname}` — Dropped Records (invalid coordinates, first 100)"),
+                mo.md(f"#### `{_lname}` — Dropped HIFLD Bronze Records (invalid coordinates, first 100)"),
                 mo.ui.table(_dropped_tables[_lname]),
             ]
 
-        for _lname in sorted(_osm_new_tables):
+        for _lname in sorted(_osm_detail_tables):
             _detail_widgets += [
-                mo.md(f"#### `{_lname}` — OSM-Matched HIFLD Records (first 100)"),
-                mo.ui.table(_osm_new_tables[_lname]),
+                mo.md(f"#### `{_lname}` — HIFLD-Confirmed Records (first 100)"),
+                mo.ui.table(_osm_detail_tables[_lname]),
             ]
 
         _snap_display = mo.vstack(_detail_widgets)

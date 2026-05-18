@@ -129,28 +129,43 @@ def _(
     pd,
     uuid,
 ):
-    import csv as _csv
-
     # ---------------------------------------------------------------------------
-    # FEMA lifeline tag matcher — parses fema_lifelines.csv once at cell load
+    # FEMA lifeline tag matcher — parses taxonomy + OSM crosswalk CSVs once
     # ---------------------------------------------------------------------------
-    def _build_fema_ll_matcher(seed_path: Path):
+    def _build_fema_ll_matcher(seed_dir: Path):
         """
-        Parse fema_lifelines.csv into a list of (fema_id, component, subcomponent, category,
-        rule_groups) tuples, where rule_groups is a list of AND-groups.
+        Parse fema_lifelines_taxonomy.csv + fema_lifeline_osm.csv into a list of
+        (struct_dict, rule_groups) tuples.
 
         osm_tags syntax:
           ","  = OR between rules  (any one rule can fire)
           "&"  = AND within a rule (all key=val pairs must match)
 
-        Example: "amenity=clinic&healthcare=dialysis,healthcare=dialysis"
-          → fires if (amenity=clinic AND healthcare=dialysis) OR (healthcare=dialysis)
-
-        Returns a function match_ll(row_dict) → (fema_id, component, subcomponent, category) | None.
+        Returns a function match_ll(row_dict) → struct dict | None.
         """
+        import csv as _csv2
+
+        taxonomy: dict[str, dict] = {}
+        with open(seed_dir / "fema_lifelines_taxonomy.csv", newline="", encoding="utf-8") as fh:
+            for row in _csv2.DictReader(fh):
+                key = row["key"].strip()
+                taxonomy[key] = {
+                    "primary": key,
+                    "hierarchy": [
+                        row["lifeline_key"].strip(),
+                        row["lifeline_component_key"].strip(),
+                        key,
+                    ],
+                    "alternates": [],
+                }
+
         rules = []
-        with open(seed_path, newline="", encoding="utf-8") as fh:
-            for row in _csv.DictReader(fh):
+        with open(seed_dir / "fema_lifeline_osm.csv", newline="", encoding="utf-8") as fh:
+            for row in _csv2.DictReader(fh):
+                lifeline_key = row["lifeline_key"].strip()
+                struct = taxonomy.get(lifeline_key)
+                if not struct:
+                    continue
                 rule_groups = []
                 for token in row["osm_tags"].split(","):
                     token = token.strip()
@@ -164,29 +179,23 @@ def _(
                             and_pairs.append((k.strip(), v.strip()))
                     if and_pairs:
                         rule_groups.append(and_pairs)
-                rules.append((
-                    row["id"].strip(),
-                    row["lifeline_component"].strip(),
-                    row["lifeline_subcomponent"].strip(),
-                    row["lifeline_category"].strip(),
-                    rule_groups,
-                ))
+                if rule_groups:
+                    rules.append((struct, rule_groups))
 
         def match_ll(row_dict: dict):
-            for fema_id, component, subcomponent, category, rule_groups in rules:
+            for struct, rule_groups in rules:
                 for and_pairs in rule_groups:  # OR between groups
                     if all(                     # AND within group
                         row_dict.get(k) is not None and str(row_dict.get(k)) == v
                         for k, v in and_pairs
                     ):
-                        return fema_id, component, subcomponent, category
+                        return struct
             return None
 
         return match_ll
 
     _seed_dir = Path(".").resolve() / "data" / "seed"
-    _fema_lifelines_path = _seed_dir / "fema_lifelines.csv"
-    _match_ll = _build_fema_ll_matcher(_fema_lifelines_path)
+    _match_ll = _build_fema_ll_matcher(_seed_dir)
 
     _LAYER_KEY_FIELDS = {
         "power": ["power", "voltage", "operator", "name"],
@@ -256,18 +265,13 @@ def _(
         gdf["confidence_tier"] = gdf["confidence_score"].apply(
             lambda s: (ConfidenceTier.HIGH if s >= 0.75 else ConfidenceTier.MEDIUM if s >= 0.40 else ConfidenceTier.LOW).value
         )
-        # Assign FEMA LL IDs from tag matching against fema_lifelines.csv
-        ll_matches = gdf.apply(lambda r: _match_ll(r.to_dict()), axis=1)
-        gdf["tmp_fema_id"]               = ll_matches.apply(lambda m: m[0] if m else None)
-        gdf["tmp_lifeline_component"]    = ll_matches.apply(lambda m: m[1] if m else None)
-        gdf["tmp_lifeline_subcomponent"] = ll_matches.apply(lambda m: m[2] if m else None)
-        gdf["tmp_lifeline_category"]     = ll_matches.apply(lambda m: m[3] if m else None)
+        # Assign fema_lifeline struct from tag matching
+        gdf["fema_lifeline"] = gdf.apply(lambda r: _match_ll(r.to_dict()), axis=1)
 
         core_cols = [c for c in [
             "lifeline_id", "display_name", "osm_category", "h3_index",
             "confidence_score", "confidence_tier",
-            "tmp_fema_id", "tmp_lifeline_component",
-            "tmp_lifeline_subcomponent", "tmp_lifeline_category",
+            "fema_lifeline",
             "geometry",
         ] if c in gdf.columns]
         core = gdf[core_cols].copy()
@@ -395,7 +399,7 @@ def _(cfg, mo):
 
 
 @app.cell
-def _(cfg, mo):
+def hifld_attributes(cfg, mo):
     # HIFLD hospital attribute extraction — produces silver/attr_health_hifld_attrs.parquet
     # Carries TRAUMA, HELIPAD, OWNER, TYPE from HIFLD bronze into the silver attr layer.
     from pathlib import Path as _P
@@ -422,11 +426,13 @@ def _(cfg, mo):
         try:
             from lib.hifld_hospital_attrs import build_attr_health_hifld
 
-            _attr = build_attr_health_hifld(
-                silver_path=_silver_path,
-                bronze_path=_bronze_path,
-                threshold=cfg.conflation.name_similarity_threshold,
-            )
+            with mo.status.spinner(title="Matching HIFLD hospital attributes..."):
+                _attr = build_attr_health_hifld(
+                    silver_path=_silver_path,
+                    bronze_path=_bronze_path,
+                    threshold=cfg.conflation.name_similarity_threshold,
+                )
+
             _attr.to_parquet(_attr_out, index=False)
             _matched = len(_attr)
             _trauma_fill = int(_attr["hifld_trauma"].notna().sum())
@@ -450,6 +456,11 @@ def _(cfg, mo):
 
     hifld_attrs_result
     return (hifld_attrs_result,)
+
+
+@app.cell
+def _(cfg, mo):
+    # EPA NAICS confidence boost — enriches silver/lifeline_points.parquet
     from pathlib import Path as _P
     import geopandas as _gpd
 
@@ -494,9 +505,12 @@ def _(cfg, mo):
 
 
 @app.cell
-def _(cfg, mo):
+def cms_enrichment(cfg, mo):
     # CMS Hospital Provider enrichment — produces silver/attr_health_cms.parquet
+    # Two-tier matching: Tier 1 spatial (geocoded lat/lon + BallTree buffer),
+    # Tier 2 ZIP + rapidfuzz name for unmatched POIs.
     from pathlib import Path as _P
+    import pandas as _pd
 
     _silver_path = _P(cfg.storage.silver_path)
     _bronze_path = _P(cfg.storage.bronze_path)
@@ -525,24 +539,45 @@ def _(cfg, mo):
                 silver_path=_silver_path,
                 bronze_path=_bronze_path,
                 threshold=_cms_cfg.name_similarity_threshold,
+                spatial_distance_m=getattr(_cms_cfg, "spatial_match_distance_m", 200.0),
+                spatial_name_threshold=getattr(_cms_cfg, "spatial_name_threshold", 0.55),
             )
             _attr.to_parquet(_attr_out, index=False)
             _matched = len(_attr)
-            _bed_fill = int((_attr["cms_bed_cnt"] > 0).sum())
+            _n_spatial = int((_attr.get("cms_match_method", _pd.Series()) == "spatial").sum())
+            _n_zip_fuzzy = _matched - _n_spatial
+            _bed_fill = int((_attr["cms_bed_cnt"] > 0).sum()) if "cms_bed_cnt" in _attr.columns else 0
+
+            # Fill rates for key staffing counts
+            def _fill(col): return int((_attr[col].notna() & (_attr[col] != 0)).sum()) if col in _attr.columns else 0
+            _physn = _fill("cms_physn_cnt")
+            _rn    = _fill("cms_rn_cnt")
+            _crna  = _fill("cms_crna_cnt")
+            _dietn = _fill("cms_dietn_cnt")
+            _lab   = _fill("cms_lab_tchncn_cnt")
+
             print(
                 f"  CMS enrichment: {_matched:,} hospitals matched "
-                f"({_bed_fill:,} with bed count) → attr_health_cms.parquet"
+                f"(spatial={_n_spatial:,}, zip_fuzzy={_n_zip_fuzzy:,}) "
+                f"| beds={_bed_fill:,} physn={_physn:,} rn={_rn:,} "
+                f"crna={_crna:,} dietn={_dietn:,} lab_tech={_lab:,} "
+                f"→ attr_health_cms.parquet"
             )
             cms_enrich_result = mo.callout(
                 mo.md(
                     f"✅ **CMS enrichment complete.** "
                     f"`{_matched:,}` hospitals matched "
-                    f"(`{_bed_fill:,}` with bed count) → `silver/attr_health_cms.parquet`."
+                    f"(spatial: `{_n_spatial:,}` · zip+fuzzy: `{_n_zip_fuzzy:,}`) · "
+                    f"beds: `{_bed_fill:,}` · physicians: `{_physn:,}` · "
+                    f"RNs: `{_rn:,}` · CRNAs: `{_crna:,}` "
+                    f"→ `silver/attr_health_cms.parquet`."
                 ),
                 kind="success",
             )
         except Exception as _e:
             print(f"  ERROR: CMS enrichment failed: {_e}")
+            import traceback as _tb
+            _tb.print_exc()
             cms_enrich_result = mo.callout(
                 mo.md(f"⚠️ CMS enrichment failed: {_e}"), kind="warn"
             )
@@ -606,17 +641,30 @@ def _(cfg, mo):
 
 
 @app.cell
-def _(acs_trauma_result, cms_enrich_result, conflation_result, epa_naics_result, hifld_attrs_result, hifld_validation_result, mo):
-    mo.vstack([
-        mo.md("## Conflation Summary"),
-        conflation_result,
-        hifld_validation_result,
-        hifld_attrs_result,
-        epa_naics_result,
-        cms_enrich_result,
-        acs_trauma_result,
-        mo.callout(mo.md("✅ **Flow 02 complete.** ➡ Run `flows/03_gersite_bridge.py` next."), kind="success"),
-    ])
+def _(
+    acs_trauma_result,
+    cms_enrich_result,
+    conflation_result,
+    epa_naics_result,
+    hifld_attrs_result,
+    hifld_validation_result,
+    is_script_mode,
+    mo,
+):
+    if is_script_mode:
+        print("Conflation Summary")
+        print("✅ Flow 02 complete. ➡ Run `flows/03_gersite_bridge.py` next.")
+    else:
+        mo.vstack([
+            mo.md("## Conflation Summary"),
+            conflation_result,
+            hifld_validation_result,
+            hifld_attrs_result,
+            epa_naics_result,
+            cms_enrich_result,
+            acs_trauma_result,
+            mo.callout(mo.md("✅ **Flow 02 complete.** ➡ Run `flows/03_gersite_bridge.py` next."), kind="success"),
+        ])
     return
 
 

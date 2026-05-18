@@ -95,10 +95,10 @@ class HifldLayerDef:
     lon_field: str
     lat_field: str
     osm_layer: str  # which silver OSM layer this validates
-    fema_id: str = ""
+    lifeline_key: str = ""
+    lifeline: str = ""
     lifeline_component: str = ""
     lifeline_subcomponent: str = ""
-    lifeline_category: str = ""
     display_name_field: str = ""   # which field to use as display_name
     nested_properties: bool = False  # True if real data is in a 'properties' dict column
     id_field: str = "OBJECTID"       # field to use in UUID5 generation
@@ -113,10 +113,10 @@ class HifldConfig:
             lon_field="LONGITUDE",
             lat_field="LATITUDE",
             osm_layer="health",
-            fema_id="019dab83-9fc6-7140-890f-8e81f3409bea",
-            lifeline_component="Health and Medical",
-            lifeline_subcomponent="Medical Care",
-            lifeline_category="Hospitals",
+            lifeline_key="hospitals",
+            lifeline="Health and Medical",
+            lifeline_component="Medical Care",
+            lifeline_subcomponent="Hospitals",
             display_name_field="NAME",
             nested_properties=False,
             id_field="OBJECTID",
@@ -124,10 +124,10 @@ class HifldConfig:
         "cellular": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/cellular-towers/cellular/cellular.parquet",
             lon_field="londec", lat_field="latdec", osm_layer="telecom",
-            fema_id="019dab83-9fc6-7d7c-a2ca-a5ac8500770b",
-            lifeline_component="Communications",
-            lifeline_subcomponent="Infrastructure",
-            lifeline_category="Wireless",
+            lifeline_key="comms_wireless",
+            lifeline="Communications",
+            lifeline_component="Infrastructure",
+            lifeline_subcomponent="Wireless",
             display_name_field="Licensee",
             nested_properties=False,
             id_field="FID",
@@ -135,10 +135,10 @@ class HifldConfig:
         "microwave": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/microwave-service-towers/microwave/microwave.parquet",
             lon_field="properties.londec", lat_field="properties.latdec", osm_layer="telecom",
-            fema_id="019dab83-9fc6-7d7c-a2ca-a5ac8500770b",
-            lifeline_component="Communications",
-            lifeline_subcomponent="Infrastructure",
-            lifeline_category="Wireless",
+            lifeline_key="comms_wireless",
+            lifeline="Communications",
+            lifeline_component="Infrastructure",
+            lifeline_subcomponent="Wireless",
             display_name_field="Licensee",
             nested_properties=True,
             id_field="FID",
@@ -146,10 +146,10 @@ class HifldConfig:
         "lm_private": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/land-mobile-private-transmission-towers/lm-private/lm-private.parquet",
             lon_field="properties.londec", lat_field="properties.latdec", osm_layer="telecom",
-            fema_id="019dab83-9fc6-7d7c-a2ca-a5ac8500770b",
-            lifeline_component="Communications",
-            lifeline_subcomponent="Infrastructure",
-            lifeline_category="Wireless",
+            lifeline_key="comms_wireless",
+            lifeline="Communications",
+            lifeline_component="Infrastructure",
+            lifeline_subcomponent="Wireless",
             display_name_field="Licensee",
             nested_properties=True,
             id_field="FID",
@@ -157,10 +157,10 @@ class HifldConfig:
         "lm_commercial": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/land-mobile-commercial-transmission-towers/lm-commercial/lm-commercial.parquet",
             lon_field="properties.londec", lat_field="properties.latdec", osm_layer="telecom",
-            fema_id="019dab83-9fc6-7650-a051-a502b3f05417",
-            lifeline_component="Communications",
-            lifeline_subcomponent="Infrastructure",
-            lifeline_category="Cable Systems and Wireline",
+            lifeline_key="comms_cable_wireline",
+            lifeline="Communications",
+            lifeline_component="Infrastructure",
+            lifeline_subcomponent="Cable Systems and Wireline",
             display_name_field="Licensee",
             nested_properties=True,
             id_field="FID",
@@ -168,10 +168,10 @@ class HifldConfig:
         "wastewater_treatment_plants": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/epa-facility-registry-service-frs---integrated-compliance-information-system-icis-wastewater-treatment-plants/integrated-compliance-information-system-icis-wastewater-treatment-plants/integrated-compliance-information-system-icis-wastewater-treatment-plants.parquet",
             lon_field="properties.FAC_LONG", lat_field="properties.FAC_LAT", osm_layer="water_infrastructure",
-            fema_id="019dab83-9fc6-7d06-a032-0e5d620955b1",
-            lifeline_component="Water Systems",
-            lifeline_subcomponent="Wastewater Management",
-            lifeline_category="Wastewater Systems",
+            lifeline_key="wastewater_treatment",
+            lifeline="Water Systems",
+            lifeline_component="Wastewater Management",
+            lifeline_subcomponent="Wastewater Treatment",
             display_name_field="CWP_NAME",
             nested_properties=True,
             id_field="OBJECTID",
@@ -179,10 +179,10 @@ class HifldConfig:
         "lng_terminals": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/liquified-natural-gas-lng-import-and-export-terminals/lng-import-and-export-terminals/lng-import-and-export-terminals.parquet",
             lon_field="Longitude", lat_field="Latitude", osm_layer="fuel",
-            fema_id="019dab83-9fc6-778c-8a6e-8f16938837eb",
-            lifeline_component="Energy",
-            lifeline_subcomponent="Fuel",
-            lifeline_category="Fuel Storage and Terminals",
+            lifeline_key="fuel_storage",
+            lifeline="Energy",
+            lifeline_component="Fuel",
+            lifeline_subcomponent="Fuel Storage and Terminals",
             display_name_field="Facility",
             nested_properties=False,
             id_field="OBJECTID",
@@ -190,10 +190,10 @@ class HifldConfig:
         "petroleum_refineries": HifldLayerDef(
             gcs_path="gs://seerai-hifld-archive/petroleum-refineries/petroleum-refinery/petroleum-refinery.parquet",
             lon_field="Longitude", lat_field="Latitude", osm_layer="fuel",
-            fema_id="019dab83-9fc6-7537-a91a-d01fc230dc8e",
-            lifeline_component="Energy",
-            lifeline_subcomponent="Fuel",
-            lifeline_category="Petroleum Refineries",
+            lifeline_key="fuel_refineries",
+            lifeline="Energy",
+            lifeline_component="Fuel",
+            lifeline_subcomponent="Petroleum Refineries",
             display_name_field="Site",
             nested_properties=False,
             id_field="OBJECTID",
@@ -208,6 +208,21 @@ class CmsConfig:
     api_url: str = "https://data.cms.gov/data-api/v1/dataset/8ba0f9b4-9493-4aa0-9f82-44ea9468d1b5/data"
     name_similarity_threshold: float = 0.80
     page_size: int = 5000
+    # Overture address geocoding — set to the partitioned address parquet root to enable
+    geocode_address_path: Optional[str] = None
+    geocode_min_score: float = 0.80
+    # PRVDR_CTGRY_CD values to geocode; null = all records; ["01"] = hospitals only
+    geocode_provider_categories: Optional[list] = None
+    # Census Bureau batch geocoder fallback (free; covers 50 states + DC + PR)
+    # followed by Nominatim for territory records still unmatched after Census.
+    geocode_census_fallback: bool = True
+    # Tier 1 spatial match: BallTree over CMS records with geocoded coordinates.
+    # Buffer is larger than HIFLD (50 m) because address-level geocoding lands
+    # at the kerb, not the building centroid.
+    spatial_match_distance_m: float = 200.0
+    # Minimum fuzzy name score required to accept a spatial match (guards against
+    # coincidentally nearby hospitals in dense areas).
+    spatial_name_threshold: float = 0.55
 
 
 @dataclass
