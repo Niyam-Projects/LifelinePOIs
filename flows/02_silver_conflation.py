@@ -327,6 +327,65 @@ def _(
 
 @app.cell
 def _(cfg, mo):
+    # Hospital building-centroid deduplication
+    # Merges amenity=hospital nodes with nearby building=hospital centroid duplicates,
+    # keeping the building centroid geometry (more accurate) and coalescing attributes.
+    from pathlib import Path as _P
+    import geopandas as _gpd
+    import pandas as _pd
+    from lib.health_dedup import dedup_hospital_building_centroids
+
+    _silver_pts = _P(cfg.storage.silver_path) / "lifeline_points.parquet"
+
+    if not _silver_pts.exists():
+        health_dedup_result = mo.callout(
+            mo.md("⏭ Health dedup skipped — `silver/lifeline_points.parquet` not found."), kind="neutral"
+        )
+    else:
+        _master = _gpd.read_parquet(_silver_pts)
+        _health_mask = _master["tmp_osm_layer"] == "health"
+        _health_rows = _master[_health_mask].copy()
+        _other_rows = _master[~_health_mask].copy()
+
+        # Load attr_health for precise building/amenity tag identification
+        _attr_path = _P(cfg.storage.silver_path) / "attr_health.parquet"
+        _attr_health = _pd.read_parquet(_attr_path) if _attr_path.exists() else None
+
+        _deduped, _n_merged = dedup_hospital_building_centroids(
+            _health_rows,
+            attr_gdf=_attr_health,
+            name_threshold=cfg.conflation.name_similarity_threshold,
+            proximity_m=cfg.conflation.spatial_proximity_meters,
+        )
+
+        if _n_merged > 0:
+            _updated = _gpd.GeoDataFrame(
+                _pd.concat([_other_rows, _deduped], ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            )
+            _updated.to_parquet(_silver_pts, index=False)
+            print(f"  Health dedup: {_n_merged} amenity-node duplicates merged into building centroids")
+            health_dedup_result = mo.callout(
+                mo.md(
+                    f"✅ **Hospital building-centroid dedup complete.** "
+                    f"`{_n_merged}` amenity-node duplicates merged into building centroids "
+                    f"(geometry kept at building centroid)."
+                ),
+                kind="success",
+            )
+        else:
+            health_dedup_result = mo.callout(
+                mo.md("ℹ️ Health dedup: no amenity-node / building-centroid pairs found within threshold."),
+                kind="neutral",
+            )
+
+    health_dedup_result
+    return (health_dedup_result,)
+
+
+@app.cell
+def _(cfg, mo):
     # HIFLD validation pass — boosts confidence for OSM points confirmed by HIFLD data
     from pathlib import Path as _P
     import geopandas as _gpd

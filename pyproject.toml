@@ -35,6 +35,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/lifelinepoi"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

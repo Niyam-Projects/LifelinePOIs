@@ -1,6 +1,6 @@
 COPY (
   WITH raw AS (
-    SELECT type, id, tags, geometry
+    SELECT type, id, tags, kind, geometry
     FROM '{{INPUT}}'
     WHERE (
       tags['amenity'] IN (
@@ -67,6 +67,16 @@ COPY (
       xmax: ST_XMax(geometry)::FLOAT,
       ymax: ST_YMax(geometry)::FLOAT
     } AS bbox,
-    geometry
+    -- Pure building=hospital/clinic closed ways become centroid points.
+    -- Features that also carry amenity= or healthcare= keep their polygon
+    -- geometry so campus collapse can use them as boundary polygons.
+    CASE
+      WHEN kind = 'area'
+       AND tags['building'] IN ('hospital', 'clinic')
+       AND tags['amenity'] IS NULL
+       AND tags['healthcare'] IS NULL
+      THEN ST_Centroid(geometry)
+      ELSE geometry
+    END AS geometry
   FROM raw
 ) TO '{{OUTPUT}}' WITH (FORMAT PARQUET, COMPRESSION ZSTD);

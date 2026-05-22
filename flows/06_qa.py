@@ -644,5 +644,573 @@ def _(Path, cfg, hifld_gdfs, mo, pd):
     return
 
 
+@app.cell
+def _(Path, cfg, mo, pd):
+    mo.stop(cfg is None, mo.callout(mo.md("Config not loaded."), kind="warn"))
+
+    _gold_path = Path(cfg.storage.gold_path)
+    _hifld_file = _gold_path / "hifld_hospitals.parquet"
+    _wide_file = _gold_path / "wide_hospitals.parquet"
+
+    def _first_col(_df, _names):
+        for _name in _names:
+            if _name in _df.columns:
+                return _df[_name]
+        return pd.Series(pd.NA, index=_df.index, dtype="object")
+
+    def _filled(_series):
+        _text = _series.astype("string").str.strip()
+        return _series.notna() & _text.ne("") & _text.str.upper().ne("NOT AVAILABLE")
+
+    if not _hifld_file.exists() or not _wide_file.exists():
+        _missing = [
+            str(_path.relative_to(_gold_path.parent))
+            for _path in (_hifld_file, _wide_file)
+            if not _path.exists()
+        ]
+        _hosp_summary_display = mo.vstack([
+            mo.md("## Hospital BEDS/TRAUMA Attribute QA"),
+            mo.callout(
+                mo.md(
+                    "Missing hospital gold outputs: "
+                    + ", ".join(f"`{_path}`" for _path in _missing)
+                    + ". Run `flows/04_gold_production.py` first."
+                ),
+                kind="warn",
+            ),
+        ])
+    else:
+        _ = pd.read_parquet(_hifld_file)
+        _wide = pd.read_parquet(_wide_file)
+
+        _beds = _first_col(_wide, ["BEDS", "beds", "cms_bed_cnt"])
+        _trauma = _first_col(_wide, ["TRAUMA", "acs_trauma_level", "hifld_trauma"])
+        _source = _first_col(_wide, ["source_provenance", "SOURCE"]).fillna("unknown")
+        _source = _source.astype("string").str.strip().replace("", "unknown")
+
+        _beds_filled = _filled(_beds)
+        _trauma_filled = _filled(_trauma)
+        _both_filled = _beds_filled & _trauma_filled
+
+        _source_summary = (
+            pd.DataFrame(
+                {
+                    "source_provenance": _source,
+                    "beds_filled": _beds_filled,
+                    "trauma_filled": _trauma_filled,
+                    "both_filled": _both_filled,
+                }
+            )
+            .groupby("source_provenance", dropna=False)
+            .agg(
+                hospitals=("beds_filled", "size"),
+                beds_filled=("beds_filled", "sum"),
+                trauma_filled=("trauma_filled", "sum"),
+                both_filled=("both_filled", "sum"),
+            )
+            .reset_index()
+        )
+        _source_summary["beds_fill_rate_pct"] = (
+            (100 * _source_summary["beds_filled"] / _source_summary["hospitals"]).round(1)
+        )
+        _source_summary["trauma_fill_rate_pct"] = (
+            (100 * _source_summary["trauma_filled"] / _source_summary["hospitals"]).round(1)
+        )
+
+        _stats = mo.hstack([
+            mo.stat(f"{len(_wide):,}", label="Total hospitals", bordered=True),
+            mo.stat(f"{int(_beds_filled.sum()):,}", label="BEDS filled", bordered=True),
+            mo.stat(f"{int(_trauma_filled.sum()):,}", label="TRAUMA filled", bordered=True),
+            mo.stat(f"{int(_both_filled.sum()):,}", label="Both filled", bordered=True),
+        ])
+
+        _hosp_summary_display = mo.vstack([
+            mo.md("## Hospital BEDS/TRAUMA Attribute QA"),
+            _stats,
+            mo.ui.table(_source_summary, label="Fill rates by source provenance"),
+        ])
+
+    _hosp_summary_display
+    return
+
+
+@app.cell
+def _(Path, cfg, mo, pd):
+    mo.stop(cfg is None, mo.callout(mo.md("Config not loaded."), kind="warn"))
+
+    _bronze_file = Path(cfg.storage.bronze_path) / "hifld" / "hospitals.parquet"
+    _silver_file = Path(cfg.storage.silver_path) / "attr_health_hifld_attrs.parquet"
+    _wide_file = Path(cfg.storage.gold_path) / "wide_hospitals.parquet"
+
+    def _first_col(_df, _names):
+        for _name in _names:
+            if _name in _df.columns:
+                return _df[_name]
+        return pd.Series(pd.NA, index=_df.index, dtype="object")
+
+    def _filled(_series):
+        _text = _series.astype("string").str.strip()
+        return _series.notna() & _text.ne("") & _text.str.upper().ne("NOT AVAILABLE")
+
+    def _coalesce_text(_df, _names):
+        _result = pd.Series(pd.NA, index=_df.index, dtype="object")
+        for _name in _names:
+            if _name not in _df.columns:
+                continue
+            _series = _df[_name]
+            _mask = _result.isna() & _filled(_series)
+            _result = _result.where(~_mask, _series)
+        return _result
+
+    _missing = [
+        str(_path)
+        for _path in (_bronze_file, _silver_file, _wide_file)
+        if not _path.exists()
+    ]
+    if _missing:
+        _bronze_gold_display = mo.vstack([
+            mo.md("### Bronze vs Gold BEDS/TRAUMA Comparison"),
+            mo.callout(
+                mo.md(
+                    "Missing inputs: "
+                    + ", ".join(f"`{_path}`" for _path in _missing)
+                    + ". Run Flows 01, 02, and 04 first."
+                ),
+                kind="warn",
+            ),
+        ])
+    else:
+        from lib.hifld_hospital_attrs import _normalize_name, load_hifld_hospitals
+
+        try:
+            from rapidfuzz import fuzz
+        except ImportError:
+            fuzz = None
+
+        _bronze = pd.read_parquet(_bronze_file)
+        _silver = pd.read_parquet(_silver_file)
+        _wide = pd.read_parquet(_wide_file)
+
+        _final_beds = _coalesce_text(_wide, ["BEDS", "beds"])
+        if "cms_bed_cnt" in _wide.columns:
+            _cms_beds = pd.to_numeric(_wide["cms_bed_cnt"], errors="coerce")
+            _final_beds = _final_beds.where(_filled(_final_beds), _cms_beds)
+        _final_trauma = _coalesce_text(_wide, ["TRAUMA", "acs_trauma_level", "hifld_trauma"])
+
+        _comparison = pd.DataFrame(
+            [
+                {"metric": "rows_loaded", "bronze_hifld": len(_bronze), "silver_hifld_attrs": len(_silver), "gold_wide_hospitals": len(_wide)},
+                {"metric": "beds_available", "bronze_hifld": int(_filled(_bronze.get("BEDS", pd.Series(pd.NA, index=_bronze.index))).sum()), "silver_hifld_attrs": pd.NA, "gold_wide_hospitals": int(_filled(_final_beds).sum())},
+                {"metric": "trauma_available", "bronze_hifld": int(_filled(_bronze.get("TRAUMA", pd.Series(pd.NA, index=_bronze.index))).sum()), "silver_hifld_attrs": int(_filled(_silver.get("hifld_trauma", pd.Series(pd.NA, index=_silver.index))).sum()), "gold_wide_hospitals": int(_filled(_final_trauma).sum())},
+                {"metric": "cms_bed_cnt_gt0", "bronze_hifld": pd.NA, "silver_hifld_attrs": pd.NA, "gold_wide_hospitals": int((pd.to_numeric(_wide.get("cms_bed_cnt", pd.Series(dtype="float64")), errors="coerce") > 0).sum())},
+                {"metric": "hifld_trauma_filled", "bronze_hifld": pd.NA, "silver_hifld_attrs": int(_filled(_silver.get("hifld_trauma", pd.Series(pd.NA, index=_silver.index))).sum()), "gold_wide_hospitals": int(_filled(_wide.get("hifld_trauma", pd.Series(pd.NA, index=_wide.index))).sum())},
+                {"metric": "acs_trauma_level_filled", "bronze_hifld": pd.NA, "silver_hifld_attrs": pd.NA, "gold_wide_hospitals": int(_filled(_wide.get("acs_trauma_level", pd.Series(pd.NA, index=_wide.index))).sum())},
+            ]
+        )
+
+        _wide_detail = _wide.copy()
+        _wide_detail["final_BEDS"] = _final_beds
+        _wide_detail["final_TRAUMA"] = _final_trauma
+
+        _silver_detail = _silver.rename(columns={"hifld_trauma": "silver_hifld_trauma"})
+        _trauma_join = _silver_detail.merge(_wide_detail, on="lifeline_id", how="inner")
+        _trauma_missing = _trauma_join[
+            _filled(_trauma_join.get("silver_hifld_trauma", pd.Series(pd.NA, index=_trauma_join.index)))
+            & ~_filled(_trauma_join["final_TRAUMA"])
+        ].copy()
+        _trauma_cols = [
+            _col
+            for _col in [
+                "lifeline_id",
+                "name",
+                "display_name",
+                "addr:state",
+                "addr:postcode",
+                "silver_hifld_trauma",
+                "hifld_trauma",
+                "acs_trauma_level",
+                "final_TRAUMA",
+                "source_provenance",
+            ]
+            if _col in _trauma_missing.columns
+        ]
+        _trauma_missing = _trauma_missing[_trauma_cols].reset_index(drop=True)
+
+        _beds_missing = pd.DataFrame(columns=[
+            "lifeline_id",
+            "bronze_NAME",
+            "bronze_BEDS",
+            "name",
+            "display_name",
+            "addr:state",
+            "addr:postcode",
+            "final_BEDS",
+            "source_provenance",
+            "match_score",
+        ])
+        _detail_notes = []
+
+        if fuzz is None:
+            _detail_notes.append(
+                mo.callout(
+                    mo.md("`rapidfuzz` is unavailable, so bronze-to-gold BEDS detail matching was skipped."),
+                    kind="warn",
+                )
+            )
+        elif "lifeline_id" not in _wide.columns:
+            _detail_notes.append(
+                mo.callout(mo.md("`lifeline_id` is missing from `gold/wide_hospitals.parquet`."), kind="warn")
+            )
+        else:
+            _bronze_match = load_hifld_hospitals(Path(cfg.storage.bronze_path))
+            _wide_match = _wide.copy()
+            for _col in ("addr:state", "addr:postcode", "addr:city", "name", "display_name"):
+                if _col not in _wide_match.columns:
+                    _wide_match[_col] = ""
+                else:
+                    _wide_match[_col] = _wide_match[_col].fillna("").astype(str).str.strip()
+            _wide_match["_state"] = _wide_match["addr:state"].str.upper().str[:2]
+            _wide_match["_zip5"] = _wide_match["addr:postcode"].str[:5]
+            _wide_match["_city"] = _wide_match["addr:city"].str.upper()
+            _wide_match["_name_norm"] = _wide_match["name"].apply(_normalize_name)
+            _empty_name = _wide_match["_name_norm"] == ""
+            _wide_match.loc[_empty_name, "_name_norm"] = _wide_match.loc[_empty_name, "display_name"].apply(_normalize_name)
+            _wide_match = _wide_match[_wide_match["_name_norm"] != ""].copy()
+
+            _match_rows = []
+            for _, _row in _bronze_match.iterrows():
+                _state = str(_row.get("_state", "") or "").strip()
+                _zip5 = str(_row.get("_zip5", "") or "").strip()
+                _city = str(_row.get("_city_norm", "") or "").strip()
+                _name = str(_row.get("_name_norm", "") or "").strip()
+                if not _state or not _name:
+                    continue
+
+                _candidates = _wide_match[_wide_match["_state"] == _state]
+                if len(_candidates) == 0:
+                    continue
+                if _zip5:
+                    _zip_candidates = _candidates[_candidates["_zip5"] == _zip5]
+                    if len(_zip_candidates) > 0:
+                        _candidates = _zip_candidates
+                    elif _city:
+                        _city_candidates = _candidates[_candidates["_city"] == _city]
+                        if len(_city_candidates) > 0:
+                            _candidates = _city_candidates
+                elif _city:
+                    _city_candidates = _candidates[_candidates["_city"] == _city]
+                    if len(_city_candidates) > 0:
+                        _candidates = _city_candidates
+
+                if len(_candidates) == 0:
+                    continue
+
+                _scores = _candidates["_name_norm"].map(
+                    lambda _candidate_name: fuzz.token_sort_ratio(_name, _candidate_name) / 100.0
+                )
+                _best_idx = _scores.astype(float).idxmax()
+                _best_score = float(_scores.loc[_best_idx])
+                if _best_score < 0.80:
+                    continue
+
+                _match_rows.append(
+                    {
+                        "lifeline_id": _wide_match.at[_best_idx, "lifeline_id"],
+                        "bronze_NAME": _row.get("NAME"),
+                        "bronze_BEDS": _row.get("BEDS"),
+                        "bronze_TRAUMA": _row.get("TRAUMA"),
+                        "match_score": round(_best_score, 3),
+                    }
+                )
+
+            if _match_rows:
+                _matched = pd.DataFrame(_match_rows)
+                _matched = (
+                    _matched.sort_values("match_score", ascending=False)
+                    .drop_duplicates("lifeline_id")
+                    .reset_index(drop=True)
+                )
+                _beds_join = _matched.merge(_wide_detail, on="lifeline_id", how="inner")
+                _beds_missing = _beds_join[
+                    _filled(_beds_join.get("bronze_BEDS", pd.Series(pd.NA, index=_beds_join.index)))
+                    & ~_filled(_beds_join["final_BEDS"])
+                ].copy()
+                _beds_cols = [
+                    _col
+                    for _col in [
+                        "lifeline_id",
+                        "bronze_NAME",
+                        "bronze_BEDS",
+                        "name",
+                        "display_name",
+                        "addr:state",
+                        "addr:postcode",
+                        "final_BEDS",
+                        "source_provenance",
+                        "match_score",
+                    ]
+                    if _col in _beds_missing.columns
+                ]
+                _beds_missing = _beds_missing[_beds_cols].reset_index(drop=True)
+
+        _bronze_gold_display = mo.vstack([
+            mo.md("### Bronze vs Gold BEDS/TRAUMA Comparison"),
+            mo.ui.table(_comparison, label="Aggregate comparison counts"),
+            *_detail_notes,
+            mo.md("#### Matched records with HIFLD trauma present but final TRAUMA null"),
+            mo.ui.table(_trauma_missing, label="TRAUMA gaps"),
+            mo.md("#### Matched bronze hospitals with BEDS present but final BEDS null"),
+            mo.ui.table(_beds_missing, label="BEDS gaps"),
+        ])
+
+    _bronze_gold_display
+    return
+
+
+@app.cell
+def _(mo):
+    hosp_reason_dd = mo.ui.dropdown(
+        options=[
+            "All",
+            "missing_address",
+            "no_silver_in_state",
+            "no_zip_city_overlap",
+            "name_below_threshold",
+            "no_name",
+        ],
+        value="All",
+        label="Match failure reason",
+        full_width=True,
+    )
+    return (hosp_reason_dd,)
+
+
+@app.cell
+def _(Path, cfg, hosp_reason_dd, mo, pd):
+    mo.stop(cfg is None, mo.callout(mo.md("Config not loaded."), kind="warn"))
+
+    from lib.hifld_hospital_attrs import _normalize_name, load_hifld_hospitals
+
+    _silver_file = Path(cfg.storage.silver_path) / "lifeline_points.parquet"
+    _bronze_file = Path(cfg.storage.bronze_path) / "hifld" / "hospitals.parquet"
+
+    if not _silver_file.exists() or not _bronze_file.exists():
+        _missing = [
+            str(_path)
+            for _path in (_silver_file, _bronze_file)
+            if not _path.exists()
+        ]
+        _match_diag_display = mo.vstack([
+            mo.md("### Match Failure Diagnostics"),
+            mo.callout(
+                mo.md(
+                    "Missing inputs: "
+                    + ", ".join(f"`{_path}`" for _path in _missing)
+                    + ". Run Flows 01 and 02 first."
+                ),
+                kind="warn",
+            ),
+        ])
+    else:
+        try:
+            from rapidfuzz import fuzz
+        except ImportError:
+            fuzz = None
+
+        if fuzz is None:
+            _match_diag_display = mo.vstack([
+                mo.md("### Match Failure Diagnostics"),
+                mo.callout(
+                    mo.md("`rapidfuzz` is required for match diagnostics."),
+                    kind="warn",
+                ),
+            ])
+        else:
+            _silver = pd.read_parquet(_silver_file)
+            if "tmp_osm_layer" in _silver.columns:
+                _silver = _silver[_silver["tmp_osm_layer"] == "health"].copy()
+            _bronze = load_hifld_hospitals(Path(cfg.storage.bronze_path))
+
+            for _col in ("addr:state", "addr:postcode", "addr:city", "name", "display_name"):
+                if _col not in _silver.columns:
+                    _silver[_col] = ""
+                else:
+                    _silver[_col] = _silver[_col].fillna("").astype(str).str.strip()
+
+            _silver["_state"] = _silver["addr:state"].str.upper().str[:2]
+            _silver["_zip5"] = _silver["addr:postcode"].str[:5]
+            _silver["_city"] = _silver["addr:city"].str.upper()
+            _silver["_name_norm"] = _silver["name"].apply(_normalize_name)
+            _silver_empty_name = _silver["_name_norm"] == ""
+            _silver.loc[_silver_empty_name, "_name_norm"] = _silver.loc[_silver_empty_name, "display_name"].apply(_normalize_name)
+            _silver = _silver[_silver["_name_norm"] != ""].copy()
+
+            _reason_rows = []
+            for _, _row in _bronze.iterrows():
+                _name = str(_row.get("_name_norm", "") or "").strip()
+                _state = str(_row.get("_state", "") or "").strip()
+                _city = str(_row.get("_city_norm", "") or "").strip()
+                _zip5 = str(_row.get("_zip5", "") or "").strip()
+
+                if not _name:
+                    _reason = "no_name"
+                elif not _state or (not _zip5 and not _city):
+                    _reason = "missing_address"
+                else:
+                    _state_matches = _silver[_silver["_state"] == _state]
+                    if len(_state_matches) == 0:
+                        _reason = "no_silver_in_state"
+                    else:
+                        _candidates = pd.DataFrame(columns=_state_matches.columns)
+                        _zip_matches = pd.DataFrame(columns=_state_matches.columns)
+                        _city_matches = pd.DataFrame(columns=_state_matches.columns)
+                        if _zip5:
+                            _zip_matches = _state_matches[_state_matches["_zip5"] == _zip5]
+                            if len(_zip_matches) > 0:
+                                _candidates = _zip_matches
+                        if len(_candidates) == 0 and _city:
+                            _city_matches = _state_matches[_state_matches["_city"] == _city]
+                            if len(_city_matches) > 0:
+                                _candidates = _city_matches
+                        if len(_candidates) == 0 and not _zip5 and not _city:
+                            _candidates = _state_matches
+
+                        if len(_candidates) == 0:
+                            _reason = "no_zip_city_overlap"
+                        else:
+                            _best_score = max(
+                                fuzz.token_sort_ratio(_name, _candidate_name) / 100.0
+                                for _candidate_name in _candidates["_name_norm"].fillna("")
+                            )
+                            _reason = "name_below_threshold" if _best_score < 0.80 else None
+
+                if _reason is not None:
+                    _reason_rows.append(
+                        {
+                            "NAME": _row.get("NAME"),
+                            "STATE": _row.get("STATE"),
+                            "CITY": _row.get("CITY"),
+                            "ZIP": _row.get("ZIP"),
+                            "BEDS": _row.get("BEDS"),
+                            "TRAUMA": _row.get("TRAUMA"),
+                            "reason": _reason,
+                        }
+                    )
+
+            _diag_df = pd.DataFrame(
+                _reason_rows,
+                columns=["NAME", "STATE", "CITY", "ZIP", "BEDS", "TRAUMA", "reason"],
+            )
+            _reason_counts = (
+                _diag_df.groupby("reason", dropna=False)
+                .size()
+                .rename("count")
+                .reset_index()
+                .sort_values(["count", "reason"], ascending=[False, True])
+            )
+            if hosp_reason_dd.value != "All":
+                _filtered_diag = _diag_df[_diag_df["reason"] == hosp_reason_dd.value].reset_index(drop=True)
+            else:
+                _filtered_diag = _diag_df.reset_index(drop=True)
+
+            _match_diag_display = mo.vstack([
+                mo.md("### Match Failure Diagnostics"),
+                hosp_reason_dd,
+                mo.ui.table(_reason_counts, label="Failure counts by reason", page_size=10),
+                mo.ui.table(_filtered_diag, label="Filtered unmatched bronze hospitals"),
+            ])
+
+    _match_diag_display
+    return
+
+
+@app.cell
+def _(mo):
+    hosp_coverage_filter_dd = mo.ui.dropdown(
+        options=["All", "Missing BEDS", "Missing TRAUMA", "Missing both"],
+        value="All",
+        label="Coverage filter",
+        full_width=True,
+    )
+    return (hosp_coverage_filter_dd,)
+
+
+@app.cell
+def _(Path, cfg, hosp_coverage_filter_dd, mo, pd):
+    mo.stop(cfg is None, mo.callout(mo.md("Config not loaded."), kind="warn"))
+
+    _wide_file = Path(cfg.storage.gold_path) / "wide_hospitals.parquet"
+
+    def _filled(_series):
+        _text = _series.astype("string").str.strip()
+        return _series.notna() & _text.ne("") & _text.str.upper().ne("NOT AVAILABLE")
+
+    def _coalesce_text(_df, _names):
+        _result = pd.Series(pd.NA, index=_df.index, dtype="object")
+        for _name in _names:
+            if _name not in _df.columns:
+                continue
+            _series = _df[_name]
+            _mask = _result.isna() & _filled(_series)
+            _result = _result.where(~_mask, _series)
+        return _result
+
+    if not _wide_file.exists():
+        _coverage_browser_display = mo.vstack([
+            mo.md("### Row-Level Attribute Coverage Browser"),
+            mo.callout(
+                mo.md("`gold/wide_hospitals.parquet` not found. Run `flows/04_gold_production.py` first."),
+                kind="warn",
+            ),
+        ])
+    else:
+        _wide = pd.read_parquet(_wide_file)
+        _display_cols = [
+            _col
+            for _col in [
+                "NAME",
+                "name",
+                "display_name",
+                "addr:state",
+                "addr:postcode",
+                "BEDS",
+                "beds",
+                "TRAUMA",
+                "cms_bed_cnt",
+                "hifld_trauma",
+                "acs_trauma_level",
+                "source_provenance",
+            ]
+            if _col in _wide.columns
+        ]
+
+        _final_beds = _coalesce_text(_wide, ["BEDS", "beds"])
+        if "cms_bed_cnt" in _wide.columns:
+            _cms_beds = pd.to_numeric(_wide["cms_bed_cnt"], errors="coerce")
+            _final_beds = _final_beds.where(_filled(_final_beds), _cms_beds)
+        _final_trauma = _coalesce_text(_wide, ["TRAUMA", "acs_trauma_level", "hifld_trauma"])
+
+        _beds_missing = ~_filled(_final_beds)
+        _trauma_missing = ~_filled(_final_trauma)
+
+        if hosp_coverage_filter_dd.value == "Missing BEDS":
+            _filtered = _wide[_beds_missing].copy()
+        elif hosp_coverage_filter_dd.value == "Missing TRAUMA":
+            _filtered = _wide[_trauma_missing].copy()
+        elif hosp_coverage_filter_dd.value == "Missing both":
+            _filtered = _wide[_beds_missing & _trauma_missing].copy()
+        else:
+            _filtered = _wide.copy()
+
+        _coverage_browser_display = mo.vstack([
+            mo.md("### Row-Level Attribute Coverage Browser"),
+            hosp_coverage_filter_dd,
+            mo.ui.table(_filtered[_display_cols], label="Hospital attribute coverage"),
+        ])
+
+    _coverage_browser_display
+    return
+
+
 if __name__ == "__main__":
     app.run()

@@ -252,7 +252,8 @@ def _(Path, cfg, gpd, mo):
                     _gdf = _gdf.merge(
                         _cms_attr[["lifeline_id", "cms_bed_cnt", "cms_certified_bed_cnt",
                                    "cms_operating_rooms", "cms_match_score",
-                                   "cms_provider_num"]].rename(columns={}),
+                                   "cms_provider_num", "cms_provider_category",
+                                   "cms_provider_subtype"]].rename(columns={}),
                         on="lifeline_id", how="left",
                     )
 
