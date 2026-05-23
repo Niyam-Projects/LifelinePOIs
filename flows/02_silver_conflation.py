@@ -209,16 +209,27 @@ def _(
     }
 
     def _load_bronze_osm(bronze_path, layer):
-        path = bronze_path / "osm" / f"{layer}.parquet"
-        if not path.exists():
-            print(f"    WARNING: Bronze OSM layer not found: {path} — skipping")
+        import glob as _glob
+        # New layout: bronze/osm/{area_name}/{layer}.parquet
+        area_paths = sorted(_glob.glob(str(bronze_path / "osm" / "*" / f"{layer}.parquet")))
+        # Fallback: old flat layout bronze/osm/{layer}.parquet
+        flat_path = bronze_path / "osm" / f"{layer}.parquet"
+        paths_to_load = area_paths if area_paths else ([str(flat_path)] if flat_path.exists() else [])
+        if not paths_to_load:
+            print(f"    WARNING: Bronze OSM layer not found for layer '{layer}' — skipping")
             return None
-        gdf = gpd.read_parquet(path)
-        if gdf.crs is None:
-            gdf = gdf.set_crs("EPSG:4326")
-        elif gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        return gdf
+        gdfs = []
+        for p in paths_to_load:
+            gdf = gpd.read_parquet(p)
+            if gdf.crs is None:
+                gdf = gdf.set_crs("EPSG:4326")
+            elif gdf.crs.to_epsg() != 4326:
+                gdf = gdf.to_crs("EPSG:4326")
+            gdfs.append(gdf)
+        if len(gdfs) == 1:
+            return gdfs[0]
+        merged = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True), crs="EPSG:4326")
+        return merged
 
     def _assign_uuids(gdf):
         gdf = gdf.copy()
@@ -382,6 +393,209 @@ def _(cfg, mo):
 
     health_dedup_result
     return (health_dedup_result,)
+
+
+@app.cell
+def _(cfg, mo):
+    """Overture Places conflation — match hospitals to OSM silver; prefer Overture names."""
+    from pathlib import Path as _P
+    import geopandas as _gpd
+    import pandas as _pd
+    import numpy as _np
+    import uuid as _uuid
+
+    _bronze_path = _P(cfg.storage.bronze_path)
+    _silver_path = _P(cfg.storage.silver_path)
+    _overture_places = _bronze_path / "overture" / "places" / "us_territories.parquet"
+    _silver_pts_path = _silver_path / "lifeline_points.parquet"
+    _attr_out = _silver_path / "attr_health_overture.parquet"
+
+    if not _overture_places.exists():
+        overture_conflation_result = mo.callout(
+            mo.md(
+                "⏭ Overture conflation skipped — "
+                "`bronze/overture/places/us_territories.parquet` not found.  \n"
+                "Run Flow 00 with **Overture Places download** enabled first."
+            ),
+            kind="neutral",
+        )
+    elif not _silver_pts_path.exists():
+        overture_conflation_result = mo.callout(
+            mo.md("⏭ Overture conflation skipped — `silver/lifeline_points.parquet` not found."), kind="neutral"
+        )
+    else:
+        try:
+            from sklearn.neighbors import BallTree as _BallTree
+
+            # ----------------------------------------------------------------
+            # 1. Load Overture places filtered to first configured taxonomy
+            # ----------------------------------------------------------------
+            _taxonomy_allowlist = cfg.overture.places_taxonomy   # e.g. [["health_care", "hospital"]]
+            _primary_taxonomy = _taxonomy_allowlist[0]           # ["health_care", "hospital"]
+            _l0 = _primary_taxonomy[0]
+            _l1 = _primary_taxonomy[1] if len(_primary_taxonomy) > 1 else None
+
+            _ov = _gpd.read_parquet(_overture_places)
+            _mask = _ov["taxonomy_l0"] == _l0
+            if _l1:
+                _mask &= _ov["taxonomy_l1"] == _l1
+            _ov_hospitals = _ov[_mask].copy().reset_index(drop=True)
+
+            # ----------------------------------------------------------------
+            # 2. Clip to union of all configured area bboxes
+            # ----------------------------------------------------------------
+            _area_bboxes = [a.bbox for a in cfg.areas if a.bbox is not None]
+            if _area_bboxes:
+                def _in_any_bbox(geom, bboxes):
+                    x, y = geom.x, geom.y
+                    return any(
+                        mnx <= x <= mxx and mny <= y <= mxy
+                        for mnx, mny, mxx, mxy in bboxes
+                    )
+                _in_area = _ov_hospitals.geometry.apply(lambda g: _in_any_bbox(g, _area_bboxes))
+                _ov_area = _ov_hospitals[_in_area].copy().reset_index(drop=True)
+            else:
+                _ov_area = _ov_hospitals.copy()
+
+            print(f"  Overture hospitals in area: {len(_ov_area):,}")
+
+            # ----------------------------------------------------------------
+            # 3. Load silver points (health layer only for BallTree matching)
+            # ----------------------------------------------------------------
+            _master = _gpd.read_parquet(_silver_pts_path)
+            _health_mask = _master["tmp_osm_layer"] == "health"
+            _health_rows = _master[_health_mask].copy()
+
+            # ----------------------------------------------------------------
+            # 4. BallTree nearest-neighbour match
+            # ----------------------------------------------------------------
+            _proximity_m = cfg.conflation.spatial_proximity_meters
+            _EARTH_R = 6_371_000.0
+
+            def _to_rad(gdf):
+                geom = gdf.geometry
+                # Reduce non-Point geometries (Polygon, MultiPolygon, etc.) to centroids
+                mask = geom.geom_type != "Point"
+                if mask.any():
+                    geom = geom.copy()
+                    geom[mask] = geom[mask].centroid
+                return _np.radians(
+                    _np.column_stack([geom.y.values, geom.x.values])
+                )
+
+            _matched_ids = set()
+            _attr_rows = []
+            _new_pois = []
+
+            if len(_health_rows) > 0 and len(_ov_area) > 0:
+                _tree = _BallTree(_to_rad(_health_rows), metric="haversine")
+                _ov_rad = _to_rad(_ov_area)
+                _dists, _idxs = _tree.query(_ov_rad, k=1)
+                _dist_m = _dists[:, 0] * _EARTH_R
+
+                for _i, (_ov_row, _d, _osm_idx) in enumerate(
+                    zip(_ov_area.itertuples(), _dist_m, _idxs[:, 0])
+                ):
+                    _ov_name = getattr(_ov_row, "overture_name", None)
+                    _ov_id = getattr(_ov_row, "overture_id", None)
+
+                    if _d <= _proximity_m:
+                        # Matched — update OSM point with Overture name + boost confidence
+                        _iloc = _health_rows.index[_osm_idx]
+                        _matched_ids.add(_iloc)
+                        _old_name = _master.at[_iloc, "display_name"]
+                        if _ov_name and str(_ov_name).strip():
+                            _master.at[_iloc, "display_name"] = str(_ov_name).strip()
+                        # Boost confidence (capped at 1.0)
+                        _master.at[_iloc, "confidence_score"] = min(
+                            1.0,
+                            float(_master.at[_iloc, "confidence_score"]) + 0.15,
+                        )
+                        _master.at[_iloc, "source_provenance"] = "osm+overture"
+                        _attr_rows.append({
+                            "poi_id": str(_master.at[_iloc, "poi_id"]),
+                            "overture_id": _ov_id,
+                            "overture_name": _ov_name,
+                            "overture_taxonomy_l0": _l0,
+                            "overture_taxonomy_l1": _l1,
+                            "match_dist_m": round(float(_d), 1),
+                            "match_type": "osm+overture",
+                        })
+                    else:
+                        # Unmatched — mint new Overture-only silver POI
+                        _raw_geom = _ov_row.geometry
+                        _geom = _raw_geom if _raw_geom.geom_type == "Point" else _raw_geom.centroid
+                        _new_id = str(
+                            _uuid.uuid5(_uuid.NAMESPACE_URL, f"overture:{_ov_id}")
+                        )
+                        _new_row = {
+                            "poi_id": _new_id,
+                            "display_name": str(_ov_name).strip() if _ov_name else "Unknown Hospital",
+                            "geometry": _geom,
+                            "confidence_score": min(1.0, float(getattr(_ov_row, "confidence", 0.5)) + 0.15),
+                            "source_provenance": "overture",
+                            "tmp_osm_layer": "health",
+                            "lifeline_key": "hospitals",
+                            "lifeline_component_key": "medical_care",
+                        }
+                        _new_pois.append(_new_row)
+                        _attr_rows.append({
+                            "poi_id": _new_id,
+                            "overture_id": _ov_id,
+                            "overture_name": _ov_name,
+                            "overture_taxonomy_l0": _l0,
+                            "overture_taxonomy_l1": _l1,
+                            "match_dist_m": None,
+                            "match_type": "overture_only",
+                        })
+
+            # ----------------------------------------------------------------
+            # 5. Merge minted POIs back into silver
+            # ----------------------------------------------------------------
+            _n_matched = sum(1 for r in _attr_rows if r["match_type"] == "osm+overture")
+            _n_minted = sum(1 for r in _attr_rows if r["match_type"] == "overture_only")
+
+            if _new_pois:
+                _minted_gdf = _gpd.GeoDataFrame(_new_pois, geometry="geometry", crs="EPSG:4326")
+                _updated_master = _gpd.GeoDataFrame(
+                    _pd.concat([_master, _minted_gdf], ignore_index=True),
+                    geometry="geometry",
+                    crs="EPSG:4326",
+                )
+            else:
+                _updated_master = _master
+
+            _updated_master.to_parquet(_silver_pts_path, index=False)
+
+            # ----------------------------------------------------------------
+            # 6. Write Overture attribute table
+            # ----------------------------------------------------------------
+            _attr_df = _pd.DataFrame(_attr_rows)
+            _attr_df.to_parquet(_attr_out, index=False)
+
+            print(
+                f"  Overture conflation: {_n_matched} matched (name updated), "
+                f"{_n_minted} minted → silver/attr_health_overture.parquet"
+            )
+            overture_conflation_result = mo.callout(
+                mo.md(
+                    f"✅ **Overture conflation complete.**  \n"
+                    f"`{_n_matched}` OSM hospitals updated with Overture names · "
+                    f"`{_n_minted}` Overture-only hospitals minted → "
+                    f"`silver/attr_health_overture.parquet`"
+                ),
+                kind="success",
+            )
+        except Exception as _e:
+            import traceback as _tb
+            print(f"  ERROR: Overture conflation failed: {_e}")
+            print(_tb.format_exc())
+            overture_conflation_result = mo.callout(
+                mo.md(f"⚠️ Overture conflation failed: {_e}"), kind="warn"
+            )
+
+    overture_conflation_result
+    return (overture_conflation_result,)
 
 
 @app.cell

@@ -8,8 +8,71 @@ from typing import Optional
 
 
 @dataclass
-class OSMConfig:
+class AreaConfig:
+    """Geographic area definition for a processing run.
+
+    Each area ties together an OSM PBF extract, a bounding box for spatial
+    filtering, and optional state codes for future per-source filtering.
+
+    Attributes:
+        name: Human-readable label (e.g. ``"caribbean"``).
+        pbf_path: Path to the OSM PBF file for this area.
+        bbox: Optional ``[min_lon, min_lat, max_lon, max_lat]`` in WGS-84.
+            Used to clip Overture places at conflation time.
+        state_codes: ISO 3166-2 sub-division codes present in this area
+            (e.g. ``["PR", "VI"]``). Stored for future per-source filtering;
+            not used to gate any source in the current implementation.
+    """
+    name: str
     pbf_path: str
+    bbox: Optional[list[float]] = None
+    state_codes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OvertureConfig:
+    """Overture Maps Places download configuration.
+
+    Controls the taxonomy filtered, S3 source, and DuckDB resource knobs
+    used by ``lib.overture.download_overture_snapshot``.
+
+    Taxonomy allowlist uses ``taxonomy.hierarchy`` (not the deprecated
+    ``categories.primary`` field, which is removed in June 2026).
+
+    Attributes:
+        bucket: S3 bucket hosting Overture releases (public, no auth).
+        s3_region: AWS region of the S3 bucket.
+        release: Overture release identifier, e.g. ``"2026-04-15.0"``, or
+            ``"latest"`` to auto-discover the most recent release.
+        places_taxonomy: List of ``[L0, L1]`` pairs (or ``[L0, null]`` to
+            match all L1s under an L0) passed to
+            ``lib.overture._build_taxonomy_predicate``.  The first entry in
+            the list is treated as the highest-priority taxonomy category
+            during conflation.
+        places_path: Absolute path to the output GeoParquet file.  If blank,
+            defaults to ``{bronze}/overture/places/us_territories.parquet``.
+        duckdb_memory_limit: Per-connection DuckDB memory cap (e.g. ``"4GB"``).
+        duckdb_threads: Per-connection DuckDB thread count.
+        workers: Number of Overture parts to download in parallel.
+    """
+    bucket: str = "overturemaps-us-west-2"
+    s3_region: str = "us-west-2"
+    release: str = "latest"
+    places_taxonomy: list = field(default_factory=lambda: [["health_care", "hospital"]])
+    places_path: str = ""
+    duckdb_memory_limit: str = "4GB"
+    duckdb_threads: int = 2
+    workers: int = 2
+
+
+@dataclass
+class OSMConfig:
+    """OSM extraction configuration.
+
+    ``pbf_path`` is retained for backward compatibility when no ``areas`` list
+    is present in the YAML.  Prefer defining areas explicitly.
+    """
+    pbf_path: str = ""
     osmium_index_type: str = "flex_mem"
     layers: list[str] = field(default_factory=lambda: ["power", "water_infrastructure", "telecom", "fuel"])
 
@@ -283,7 +346,7 @@ class TilesConfig:
 
 @dataclass
 class LifelineConfig:
-    osm: OSMConfig
+    osm: OSMConfig = field(default_factory=OSMConfig)
     duckdb: DuckDBConfig = field(default_factory=DuckDBConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     eia: EIAConfig = field(default_factory=EIAConfig)
@@ -299,12 +362,49 @@ class LifelineConfig:
     epa_naics: EpaNaicsConfig = field(default_factory=EpaNaicsConfig)
     campus_collapse: CampusCollapseConfig = field(default_factory=CampusCollapseConfig)
     cms: CmsConfig = field(default_factory=CmsConfig)
+    areas: list[AreaConfig] = field(default_factory=list)
+    overture: OvertureConfig = field(default_factory=OvertureConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.lifeline.yaml") -> "LifelineConfig":
         with open(path) as f:
             raw = yaml.safe_load(f)
-        osm = OSMConfig(**raw["osm"])
+
+        # --- areas -----------------------------------------------------------
+        # New style: explicit areas list.
+        # Backward compat: if no areas but osm.pbf_path is set, wrap into one area.
+        areas: list[AreaConfig] = []
+        areas_raw = raw.get("areas", []) or []
+        for a in areas_raw:
+            areas.append(AreaConfig(
+                name=a.get("name", "default"),
+                pbf_path=a.get("pbf_path", ""),
+                bbox=a.get("bbox"),
+                state_codes=a.get("state_codes", []),
+            ))
+
+        # --- osm -------------------------------------------------------------
+        osm_raw = raw.get("osm", {})
+        # If no areas defined but legacy pbf_path is present, create one area.
+        if not areas and osm_raw.get("pbf_path"):
+            aoi_bbox = (raw.get("aoi") or {}).get("bbox")
+            areas.append(AreaConfig(
+                name="default",
+                pbf_path=osm_raw["pbf_path"],
+                bbox=aoi_bbox,
+                state_codes=[],
+            ))
+        # OSMConfig no longer requires pbf_path; use first area if available.
+        osm_kwargs = {k: v for k, v in osm_raw.items() if k in OSMConfig.__dataclass_fields__}
+        if "pbf_path" not in osm_kwargs and areas:
+            osm_kwargs["pbf_path"] = areas[0].pbf_path
+        osm = OSMConfig(**osm_kwargs)
+
+        # --- overture --------------------------------------------------------
+        overture_raw = raw.get("overture", {})
+        overture = OvertureConfig(**{k: v for k, v in overture_raw.items()
+                                     if k in OvertureConfig.__dataclass_fields__})
+
         duckdb = DuckDBConfig(**raw.get("duckdb", {}))
         storage = StorageConfig(**raw.get("storage", {}))
         eia = EIAConfig(**raw.get("eia", {}))
@@ -346,4 +446,5 @@ class LifelineConfig:
         return cls(osm=osm, duckdb=duckdb, storage=storage, eia=eia, epa=epa,
                    echo=echo, sdwis=sdwis, fcc=fcc, irs=irs, eia_api=eia_api,
                    conflation=conflation, tiles=tiles, hifld=hifld, epa_naics=epa_naics,
-                   campus_collapse=campus_collapse, cms=cms)
+                   campus_collapse=campus_collapse, cms=cms,
+                   areas=areas, overture=overture)

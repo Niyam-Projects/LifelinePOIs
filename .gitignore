@@ -17,6 +17,10 @@ data/tiles/
 *.pmtiles
 *.mbtiles
 
+# Overture per-part intermediates and DuckDB temp files (auto-created, resumable)
+data/reference/census_boundary/
+**/.parts/
+
 # DuckDB
 *.duckdb
 *.wal

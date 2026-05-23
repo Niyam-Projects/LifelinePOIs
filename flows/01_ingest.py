@@ -66,6 +66,7 @@ def _(BaseModel, Field):
         run_eia_terminals: bool = Field(default=True, description="Download EIA terminal data (requires EIA_API_KEY in .env.local)")
         run_hifld: bool = Field(default=True, description="Download HIFLD validation layers from seerai-hifld-archive GCS")
         run_cms: bool = Field(default=True, description="Download CMS Hospital & Non-Hospital Provider data")
+        area: str = Field(default="", description="Area name to process (empty = all configured areas)")
         layer: str = Field(default="", description="Single OSM layer (empty = all layers)")
 
     return (FlowParams,)
@@ -92,6 +93,8 @@ def _(mo):
         - {run_cms} CMS hospital provider data (bed counts)
 
         Single layer override (blank = all layers): {layer}
+
+        Area override (blank = all configured areas): {area}
         """)
         .batch(
             config_path=mo.ui.text(value="config.lifeline.yaml", label="Config path"),
@@ -106,6 +109,7 @@ def _(mo):
             run_hifld=mo.ui.checkbox(value=True, label=""),
             run_cms=mo.ui.checkbox(value=True, label=""),
             layer=mo.ui.text(value="", placeholder="e.g. power", label=""),
+            area=mo.ui.text(value="", placeholder="e.g. florida", label=""),
         )
         .form(submit_button_label="▶ Run Ingestion")
     )
@@ -142,33 +146,34 @@ def _(FlowParams, is_script_mode, mo, params_form):
 @app.cell
 def _(LifelineConfig, flow_params, mo):
     cfg = LifelineConfig.from_yaml(flow_params.config_path)
-    mo.md(f"**Config loaded.** Layers: `{', '.join(cfg.osm.layers)}`  |  PBF: `{cfg.osm.pbf_path}`")
+    _area_names = [a.name for a in cfg.areas]
+    mo.md(f"**Config loaded.** Layers: `{', '.join(cfg.osm.layers)}`  |  Areas: `{', '.join(_area_names)}`")
     return (cfg,)
 
 
 @app.cell
 def _(cfg, flow_params, get_connection, mo, run_layer_sql):
-    def _ingest_osm(layers=None):
+    def _ingest_osm_area(area, layers=None):
         from pathlib import Path as _P
         import time as _t
-        pbf_path = _P(cfg.osm.pbf_path)
+        pbf_path = _P(area.pbf_path)
         if not pbf_path.exists():
             raise FileNotFoundError(
-                f"OSM PBF file not found: {pbf_path}\n"
+                f"OSM PBF file not found for area '{area.name}': {pbf_path}\n"
                 "Download a regional extract from https://download.geofabrik.de/ "
-                "and set osm.pbf_path in config.lifeline.yaml"
+                "and update the pbf_path in config.lifeline.yaml"
             )
         sql_dir = _P(".").resolve() / "sql"
-        bronze_osm = _P(cfg.storage.bronze_path) / "osm"
+        bronze_osm = _P(cfg.storage.bronze_path) / "osm" / area.name
         bronze_osm.mkdir(parents=True, exist_ok=True)
         target_layers = layers or cfg.osm.layers
-        print(f"OSM PBF: {pbf_path}")
-        print(f"Layers to extract: {target_layers}")
+        print(f"[{area.name}] OSM PBF: {pbf_path}")
+        print(f"[{area.name}] Layers to extract: {target_layers}")
         conn = get_connection(cfg.duckdb.memory_limit)
         try:
             for _lyr in target_layers:
                 output_path = bronze_osm / f"{_lyr}.parquet"
-                print(f"  Extracting layer: {_lyr} -> {output_path}")
+                print(f"  [{area.name}] Extracting layer: {_lyr} -> {output_path}")
                 t0 = _t.perf_counter()
                 run_layer_sql(
                     conn=conn, sql_dir=sql_dir, layer=_lyr,
@@ -177,14 +182,27 @@ def _(cfg, flow_params, get_connection, mo, run_layer_sql):
                 )
                 elapsed = _t.perf_counter() - t0
                 size_mb = output_path.stat().st_size / 1_048_576
-                print(f"    Done in {elapsed:.1f}s — {size_mb:.1f} MB")
+                print(f"    [{area.name}] Done in {elapsed:.1f}s — {size_mb:.1f} MB")
         finally:
             conn.close()
 
     if flow_params.run_osm:
-        print("[OSM] Starting PBF extraction")
-        _ingest_osm(layers=[flow_params.layer] if flow_params.layer else None)
-        osm_result = mo.callout(mo.md("✅ **OSM extraction complete.**"), kind="success")
+        area_filter = flow_params.area.strip()
+        target_areas = [a for a in cfg.areas if not area_filter or a.name == area_filter]
+        if not target_areas:
+            osm_result = mo.callout(
+                mo.md(f"⚠️ No area named `{area_filter}` found in config. Available: `{', '.join(a.name for a in cfg.areas)}`"),
+                kind="warn",
+            )
+        else:
+            layer_list = [flow_params.layer] if flow_params.layer else None
+            print(f"[OSM] Processing {len(target_areas)} area(s): {', '.join(a.name for a in target_areas)}")
+            for _area in target_areas:
+                _ingest_osm_area(_area, layers=layer_list)
+            osm_result = mo.callout(
+                mo.md(f"✅ **OSM extraction complete.** Areas: `{', '.join(a.name for a in target_areas)}`"),
+                kind="success",
+            )
     else:
         osm_result = mo.callout(mo.md("⏭ OSM extraction skipped."), kind="neutral")
     osm_result

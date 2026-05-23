@@ -44,6 +44,7 @@ def _(BaseModel, Field):
         region: str = Field(default="US", description="Country filter: 'US' includes all territories (PR, VI, GU, MP, AS, UM), any ISO-3166 code (e.g. DE, GB), or 'all' for global")
         release: str = Field(default="latest", description="Overture Maps release version (e.g. 2026-04-15.0) or 'latest' to auto-discover")
         output_dir: str = Field(default="", description="Output directory for hive-partitioned parquet (blank = auto from config bronze_path)")
+        run_overture_places: bool = Field(default=True, description="Download Overture Places snapshot (hospitals + configured taxonomies) for US + territories")
 
     return (FlowParams,)
 
@@ -61,12 +62,16 @@ def _(mo):
         Overture release (`latest` to auto-discover): {release}
 
         Output directory (blank = `{{bronze}}/overture/addresses/`): {output_dir}
+
+        Steps to run:
+        - {run_overture_places} Overture Places download (hospitals + configured taxonomies, US + territories)
         """)
         .batch(
             config_path=mo.ui.text(value="config.lifeline.yaml", label="Config path"),
             region=mo.ui.text(value="US", label=""),
             release=mo.ui.text(value="latest", label=""),
             output_dir=mo.ui.text(value="", placeholder="leave blank for default", label=""),
+            run_overture_places=mo.ui.checkbox(value=True, label=""),
         )
         .form(submit_button_label="▶ Run Setup")
     )
@@ -238,7 +243,99 @@ def _(cfg, flow_params, mo):
 
 
 @app.cell
-def _(is_script_mode, mo, setup_result):
+def _(cfg, flow_params, mo):
+    """Download Overture Places (hospitals + configured taxonomy) for US + territories."""
+    from pathlib import Path as _P
+
+    if not flow_params.run_overture_places:
+        overture_places_result = mo.callout(mo.md("⏭ Overture Places download skipped."), kind="neutral")
+    else:
+        import sys as _sys
+        _sys.path.insert(0, str(_P(".").resolve()))
+        from lib.overture import download_overture_snapshot, get_latest_release_date
+        from lib.boundary import get_us_pr_boundary
+        import time as _time
+
+        _overture_cfg = cfg.overture
+        _bronze_path = _P(cfg.storage.bronze_path)
+
+        # Resolve output path
+        if _overture_cfg.places_path:
+            _output_path = _P(_overture_cfg.places_path)
+        else:
+            _output_path = _bronze_path / "overture" / "places" / "us_territories.parquet"
+
+        _CENSUS_BOUNDARY_URL = (
+            "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_5m.zip"
+        )
+        _boundary_cache = _P(".").resolve() / "data" / "reference" / "census_boundary"
+
+        if _output_path.exists():
+            overture_places_result = mo.callout(
+                mo.md(
+                    f"ℹ️ **Overture Places already downloaded.** → `{_output_path}`  \n"
+                    f"Delete the file to re-download."
+                ),
+                kind="neutral",
+            )
+        else:
+            try:
+                t0 = _time.perf_counter()
+
+                print("[Overture Places] Downloading Census boundary for US + territories…")
+                _boundary_gdf, _coarse_bboxes = get_us_pr_boundary(
+                    source_url=_CENSUS_BOUNDARY_URL,
+                    cache_dir=_boundary_cache,
+                )
+                print(f"  Boundary loaded. Coarse bboxes: {len(_coarse_bboxes)}")
+
+                _release = _overture_cfg.release
+                if _release.strip().lower() == "latest":
+                    _release = get_latest_release_date(bucket=_overture_cfg.bucket)
+                    print(f"  Auto-discovered Overture release: {_release}")
+
+                taxonomy_label = ", ".join(
+                    f"{t[0]}/{t[1]}" if len(t) > 1 and t[1] else t[0]
+                    for t in _overture_cfg.places_taxonomy
+                )
+                print(f"[Overture Places] Taxonomy: {taxonomy_label}")
+                print(f"[Overture Places] Output:   {_output_path}")
+
+                _result = download_overture_snapshot(
+                    output_path=_output_path,
+                    taxonomy_allowlist=_overture_cfg.places_taxonomy,
+                    boundary_gdf=_boundary_gdf,
+                    coarse_bboxes=_coarse_bboxes,
+                    bucket=_overture_cfg.bucket,
+                    s3_region=_overture_cfg.s3_region,
+                    release_date=_release,
+                    source_label="overture",
+                    duckdb_memory_limit=_overture_cfg.duckdb_memory_limit,
+                    duckdb_threads=_overture_cfg.duckdb_threads,
+                    workers=_overture_cfg.workers,
+                )
+                _elapsed = _time.perf_counter() - t0
+                _size_mb = _result.stat().st_size / 1_048_576
+                print(f"  Done in {_elapsed:.1f}s — {_size_mb:.1f} MB → {_result}")
+                overture_places_result = mo.callout(
+                    mo.md(
+                        f"✅ **Overture Places downloaded.** `{taxonomy_label}` · "
+                        f"`{_size_mb:.0f} MB` → `{_result}`"
+                    ),
+                    kind="success",
+                )
+            except Exception as _e:
+                overture_places_result = mo.callout(
+                    mo.md(f"❌ **Overture Places download failed:** {_e}"), kind="danger"
+                )
+                print(f"  ERROR: {_e}")
+
+    overture_places_result
+    return (overture_places_result,)
+
+
+@app.cell
+def _(is_script_mode, mo, setup_result, overture_places_result):
     if is_script_mode:
         print("Setup Summary")
         print("Flow 00 complete. Run flows/01_ingest.py next to ingest OSM + federal data sources.")
@@ -246,6 +343,7 @@ def _(is_script_mode, mo, setup_result):
         mo.vstack([
             mo.md("## Setup Summary"),
             setup_result,
+            overture_places_result,
             mo.callout(
                 mo.md("✅ **Flow 00 complete.** ➡ Run `flows/01_ingest.py` next to ingest OSM + federal data sources."),
                 kind="success",

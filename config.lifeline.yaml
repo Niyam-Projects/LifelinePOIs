@@ -1,9 +1,36 @@
 # LifelinePOI Configuration
-# Edit osm.pbf_path to point to your local OSM PBF extract.
+# Edit areas[].pbf_path to point to your local OSM PBF extracts.
 # Download regional extracts from: https://download.geofabrik.de/
 
+# ---------------------------------------------------------------------------
+# Processing Areas
+# Each area binds an OSM PBF extract to an optional bounding box and a list
+# of state/territory codes.  bbox is used to clip Overture Places at
+# conflation time.  state_codes is stored for future per-source filtering
+# (currently informational only).
+# ---------------------------------------------------------------------------
+areas:
+  - name: "puerto-rico"
+    pbf_path: "E:\\lifelinepois\\input\\puerto-rico-260521.osm.pbf"
+    bbox: [-67.3, 17.9, -65.2, 18.6]
+    state_codes: ["PR"]
+
+  - name: "us-virgin-islands"
+    pbf_path: "E:\\lifelinepois\\input\\us-virgin-islands-260521.osm.pbf"
+    bbox: [-65.1, 17.6, -64.5, 18.5]
+    state_codes: ["VI"]
+
+  - name: "florida"
+    pbf_path: "E:\\lifelinepois\\input\\florida-260521.osm.pbf"
+    bbox: [-87.7, 24.4, -79.9, 31.0]
+    state_codes: ["FL"]
+
+  - name: "pacific-territories"
+    pbf_path: "E:\\lifelinepois\\input\\american-oceania-260521.osm.pbf"
+    bbox: null                                               # Non-contiguous islands; no bbox clipping
+    state_codes: ["MP", "GU", "AS"]
+
 osm:
-  pbf_path: "E:\\lifelinepois\\input\\central-america-260506.osm.pbf"   # REQUIRED: path to your local OSM PBF file
   osmium_index_type: "flex_mem"           # Options: flex_mem (default), dense_file_array (planet builds)
   layers:
     - power
@@ -70,10 +97,22 @@ tiles:
   max_zoom: 14
   layer_name: "lifeline_poi"
 
-aoi:
-  # Optional bounding box to clip output (leave null for full extent)
-  # Format: [min_lon, min_lat, max_lon, max_lat]
-  bbox: null
+# ---------------------------------------------------------------------------
+# Overture Maps Places
+# Controls the taxonomy-filtered POI download used for conflation.
+# Output: {bronze}/overture/places/us_territories.parquet (all US+territories)
+# Per-area bbox clipping happens at conflation time (see areas above).
+# ---------------------------------------------------------------------------
+overture:
+  bucket: "overturemaps-us-west-2"
+  s3_region: "us-west-2"
+  release: "latest"                # "latest" or a specific version like "2026-04-15.0"
+  places_taxonomy:
+    - ["health_care", "hospital"]  # First entry = highest priority in conflation
+  places_path: ""                  # blank = auto: {bronze}/overture/places/us_territories.parquet
+  duckdb_memory_limit: "4GB"       # per-connection DuckDB memory cap (workers × this = peak RAM)
+  duckdb_threads: 2                # per-connection DuckDB thread count
+  workers: 2                       # number of S3 parts downloaded in parallel
 
 hifld:
   # HIFLD open data via seerai.ai GCS archive — used for confidence validation only
