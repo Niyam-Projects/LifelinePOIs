@@ -15,9 +15,11 @@ from lib.cms_health_enrich import (
     _normalize_name,
     _detect_cnt_columns,
     _build_result_row,
+    _tier1_spatial,
     _tier2_zip_fuzzy,
     _tier3_addr_zip,
     _tier4_name_zip,
+    _tier5_census_spatial,
 )
 
 
@@ -1068,3 +1070,334 @@ class TestKnownMatchingGaps:
       - test_auxilio_mutuo_city_token_set  → TestTier2ZipFuzzy::test_auxilio_mutuo_city_token_set
     """
     pass  # All gaps currently closed; add new gap tests here as they are discovered.
+
+
+# ---------------------------------------------------------------------------
+# Section 7b — Tier 1 multi-candidate selection
+# ---------------------------------------------------------------------------
+
+class TestTier1MultiCandidate:
+    """
+    Tests for _tier1_spatial k=min(10,n) nearest-neighbor expansion and
+    hospital-category / bed-count tie-breaking.
+    """
+
+    def _make_health(self, lat, lon, name):
+        import geopandas as gpd
+        from shapely.geometry import Point
+        return gpd.GeoDataFrame(
+            {
+                "lifeline_id": ["lid_001"],
+                "name": [name],
+                "_name_norm": [_normalize_name(name)],
+                "_zip5": ["00731"],
+                "_state": ["PR"],
+                "_city": ["PONCE"],
+                "_addr_num": [""],
+            },
+            geometry=[Point(lon, lat)],
+            crs="EPSG:4326",
+        )
+
+    def _make_cms(self, lats, lons, names, categories, beds, nums=None):
+        n = len(lats)
+        if nums is None:
+            nums = [f"4000{i:02d}" for i in range(n)]
+        return pd.DataFrame({
+            "PRVDR_NUM": nums,
+            "FAC_NAME": names,
+            "_name_norm": [_normalize_name(x) for x in names],
+            "_zip5": ["00731"] * n,
+            "_state": ["PR"] * n,
+            "_addr_num": [""] * n,
+            "PRVDR_CTGRY_CD": categories,
+            "BED_CNT": pd.array(beds, dtype="Int64"),
+            "CRTFD_BED_CNT": pd.array([0] * n, dtype="Int64"),
+            "OPRTG_ROOM_CNT": pd.array([0] * n, dtype="Int64"),
+            "geocoded_lat": lats,
+            "geocoded_lon": lons,
+        })
+
+    def test_nearest_candidate_selected(self):
+        """T1-01: When two providers are within range, the closer/better-named one wins."""
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(
+            lats=[18.0, 18.0002],
+            lons=[-66.6, -66.6002],
+            names=["San Lucas Hospital", "Unrelated Clinic"],
+            categories=["01", "02"],
+            beds=[100, 50],
+        )
+        results, _ = _tier1_spatial(health, cms, 500.0, 0.30, ["BED_CNT"])
+        assert len(results) == 1
+        assert results[0]["cms_provider_num"] == "400000"  # San Lucas (exact match)
+
+    def test_hospital_category_tiebreaker(self):
+        """T1-02: Two candidates at identical distance and same name; PRVDR_CTGRY_CD='01' wins."""
+        health = self._make_health(18.0, -66.6, "Regional Medical Center")
+        # Both CMS providers at exactly the same coords AND identical names → same name score
+        cms = self._make_cms(
+            lats=[18.0, 18.0],
+            lons=[-66.6, -66.6],
+            names=["Regional Medical Center", "Regional Medical Center"],
+            categories=["02", "01"],   # second is the general hospital
+            beds=[100, 100],
+            nums=["400001", "400002"],
+        )
+        results, _ = _tier1_spatial(health, cms, 500.0, 0.30, ["BED_CNT"])
+        assert len(results) == 1
+        # Category "01" provider (400002) should win the tie
+        assert results[0]["cms_provider_num"] == "400002"
+
+    def test_bed_count_tiebreaker(self):
+        """T1-03: Same name score, same category; higher BED_CNT wins."""
+        health = self._make_health(18.0, -66.6, "Regional Medical Center")
+        cms = self._make_cms(
+            lats=[18.0, 18.0],
+            lons=[-66.6, -66.6],
+            names=["Regional Medical Center", "Regional Medical Center"],
+            categories=["01", "01"],
+            beds=[50, 200],   # second has more beds
+            nums=["400001", "400002"],
+        )
+        results, _ = _tier1_spatial(health, cms, 500.0, 0.30, ["BED_CNT"])
+        assert len(results) == 1
+        assert results[0]["cms_provider_num"] == "400002"
+
+    def test_below_threshold_excluded(self):
+        """T1-04: Provider is within distance but name score < threshold → no match."""
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(
+            lats=[18.0],
+            lons=[-66.6],
+            names=["Completely Different Name"],
+            categories=["01"],
+            beds=[100],
+        )
+        results, _ = _tier1_spatial(health, cms, 500.0, 0.90, ["BED_CNT"])
+        assert results == []
+
+    def test_outside_distance_excluded(self):
+        """T1-05: Provider is outside radius → no match."""
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(
+            lats=[18.5],    # ~55 km away
+            lons=[-66.6],
+            names=["San Lucas Hospital"],
+            categories=["01"],
+            beds=[100],
+        )
+        results, _ = _tier1_spatial(health, cms, 200.0, 0.30, ["BED_CNT"])
+        assert results == []
+
+    def test_already_matched_poi_skipped(self):
+        """T1-06: lifeline_id in already_matched → Tier 1 skips that POI."""
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(
+            lats=[18.0],
+            lons=[-66.6],
+            names=["San Lucas Hospital"],
+            categories=["01"],
+            beds=[100],
+        )
+        results, _ = _tier1_spatial(health, cms, 500.0, 0.30, ["BED_CNT"],
+                                    already_matched={"lid_001"})
+        assert results == []
+
+    def test_match_method_recorded(self):
+        """T1-07: Matched result has cms_match_method='spatial'."""
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(
+            lats=[18.0],
+            lons=[-66.6],
+            names=["San Lucas Hospital"],
+            categories=["01"],
+            beds=[100],
+        )
+        results, _ = _tier1_spatial(health, cms, 500.0, 0.30, ["BED_CNT"])
+        assert len(results) == 1
+        assert results[0]["cms_match_method"] == "spatial"
+
+
+# ---------------------------------------------------------------------------
+# Section 10 — Tier 5: Census geocode + spatial
+# ---------------------------------------------------------------------------
+
+class TestTier5CensusSpatial:
+    """
+    Tests for _tier5_census_spatial using a monkeypatched _geocode_cms_census
+    to avoid real Census API calls.
+    """
+
+    def _make_health(self, lat, lon, name, lid="lid_001"):
+        import geopandas as gpd
+        from shapely.geometry import Point
+        return gpd.GeoDataFrame(
+            {
+                "lifeline_id": [lid],
+                "name": [name],
+                "_name_norm": [_normalize_name(name)],
+                "_zip5": ["00731"],
+                "_state": ["PR"],
+                "_city": ["PONCE"],
+                "_addr_num": [""],
+            },
+            geometry=[Point(lon, lat)],
+            crs="EPSG:4326",
+        )
+
+    def _make_cms(self, names, nums=None, beds=None, categories=None):
+        n = len(names)
+        if nums is None:
+            nums = [f"5000{i:02d}" for i in range(n)]
+        if beds is None:
+            beds = [100] * n
+        if categories is None:
+            categories = ["01"] * n
+        return pd.DataFrame({
+            "PRVDR_NUM": nums,
+            "FAC_NAME": names,
+            "_name_norm": [_normalize_name(x) for x in names],
+            "_zip5": ["00731"] * n,
+            "_state": ["PR"] * n,
+            "_addr_num": [""] * n,
+            "PRVDR_CTGRY_CD": categories,
+            "BED_CNT": pd.array(beds, dtype="Int64"),
+            "CRTFD_BED_CNT": pd.array([0] * n, dtype="Int64"),
+            "OPRTG_ROOM_CNT": pd.array([0] * n, dtype="Int64"),
+            # No geocoded_lat/lon → makes them candidates for Tier 5
+            "geocoded_lat": [float("nan")] * n,
+            "geocoded_lon": [float("nan")] * n,
+        })
+
+    def test_basic_spatial_match(self, monkeypatch):
+        """T5-01: Geocoded CMS provider within distance + name threshold → match."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["San Lucas Hospital"], nums=["500001"])
+
+        # Patch geocoder to return (lon, lat) for row 0
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 18.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.50)
+        assert len(results) == 1
+        assert results[0]["cms_provider_num"] == "500001"
+
+    def test_method_label(self, monkeypatch):
+        """T5-02: Match method is 'census_spatial'."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["San Lucas Hospital"], nums=["500001"])
+
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 18.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.50)
+        assert results[0]["cms_match_method"] == "census_spatial"
+
+    def test_name_below_threshold_excluded(self, monkeypatch):
+        """T5-03: Provider is within distance but name score < threshold → no match."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["Completely Different Name"], nums=["500001"])
+
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 18.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.90)
+        assert results == []
+
+    def test_outside_distance_excluded(self, monkeypatch):
+        """T5-04: Provider geocoded far away → no match even with good name."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["San Lucas Hospital"], nums=["500001"])
+
+        # Return a location ~100 km away
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 19.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=200.0,
+                                        census_name_threshold=0.50)
+        assert results == []
+
+    def test_already_matched_poi_skipped(self, monkeypatch):
+        """T5-05: lifeline_id already matched → Tier 5 skips it."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["San Lucas Hospital"], nums=["500001"])
+
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 18.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"],
+                                        already_matched={"lid_001"},
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.50)
+        assert results == []
+
+    def test_cms_already_matched_skipped(self, monkeypatch):
+        """T5-06: PRVDR_NUM already matched → Tier 5 skips that CMS provider."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["San Lucas Hospital"], nums=["500001"])
+
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 18.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.50,
+                                        cms_already_matched={"500001"})
+        assert results == []
+
+    def test_geocoder_returns_empty(self, monkeypatch):
+        """T5-07: Census API returns no hits → gracefully returns []."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "San Lucas Hospital")
+        cms = self._make_cms(["San Lucas Hospital"], nums=["500001"])
+
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.50)
+        assert results == []
+
+    def test_hospital_category_tiebreaker(self, monkeypatch):
+        """T5-08: Two CMS providers at same geocoded coords; PRVDR_CTGRY_CD='01' wins."""
+        import lib.cms_health_enrich as mod
+
+        health = self._make_health(18.0, -66.6, "Regional Medical Center")
+        cms = self._make_cms(
+            ["Regional Medical Center Children", "Regional Medical Center"],
+            nums=["500001", "500002"],
+            categories=["02", "01"],
+            beds=[100, 100],
+        )
+
+        # Both geocode to same point
+        monkeypatch.setattr(mod, "_geocode_cms_census",
+                            lambda rows, **kw: {0: (-66.6, 18.0), 1: (-66.6, 18.0)})
+
+        results = _tier5_census_spatial(health, cms, ["BED_CNT"], set(),
+                                        census_distance_m=500.0,
+                                        census_name_threshold=0.30)
+        assert len(results) == 1
+        assert results[0]["cms_provider_num"] == "500002"  # general hospital

@@ -1163,6 +1163,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pyarrow" },
     { name = "pydantic" },
+    { name = "pygris" },
     { name = "pyyaml" },
     { name = "rapidfuzz" },
     { name = "scikit-learn" },
@@ -1194,6 +1195,7 @@ requires-dist = [
     { name = "prefect", marker = "extra == 'orchestration'", specifier = ">=3.0" },
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pygris", specifier = ">=0.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rapidfuzz", specifier = ">=3.0" },
@@ -1826,6 +1828,15 @@ wheels = [
 ]
 
 [[package]]
+name = "platformdirs"
+version = "4.9.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/4a/0883b8e3802965322523f0b200ecf33d31f10991d0401162f4b23c698b42/platformdirs-4.9.6.tar.gz", hash = "sha256:3bfa75b0ad0db84096ae777218481852c0ebc6c727b3168c1b9e0118e458cf0a", size = 29400, upload-time = "2026-04-09T00:04:10.812Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/a6/a0a304dc33b49145b21f4808d763822111e67d1c3a32b524a1baf947b6e1/platformdirs-4.9.6-py3-none-any.whl", hash = "sha256:e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917", size = 21348, upload-time = "2026-04-09T00:04:09.463Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2250,6 +2261,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
+]
+
+[[package]]
+name = "pygris"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geopandas" },
+    { name = "platformdirs" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4b/c6/138d75978264144d11cfce5e03b1751c02d10ce5674a031d57f2573ac069/pygris-0.2.1.tar.gz", hash = "sha256:d0a6893b60a4f10c1fda1939228450a89b4c6f6c7a7afcbad441da24666d30d0", size = 52170, upload-time = "2025-12-27T15:06:35.281Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/8a/183cdcf7492b164d4e93abeb2c9af979c85e297aba5224395a023b793f4f/pygris-0.2.1-py3-none-any.whl", hash = "sha256:34645b3cc456f6b761326979f0bac98f780931e72956bb6c86e742895908beca", size = 58320, upload-time = "2025-12-27T15:06:36.444Z" },
 ]
 
 [[package]]

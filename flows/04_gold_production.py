@@ -237,6 +237,101 @@ def _(Path, cfg, gpd, mo):
                 _gdf = _gdf[_gdf["source_provenance"] != "epa_frs"].copy()
                 print(f"  epa_frs-only filter: {_before_epa:,} → {len(_gdf):,} (removed sole-epa_frs records)")
 
+            # --- Spatial deduplication (two-pass) ---
+            # Pass A: Exact-coordinate duplicates — same lat/lon (rounded to 7 dp ≈ 1cm).
+            #   Coalesces key attribute fields across duplicates; keeps the highest-confidence row.
+            # Pass B: Near-duplicate cluster at ≤10m — catches building centroids on the same
+            #   campus that were NOT collapsed by campus_collapse (e.g. PR hospitals lacking a
+            #   campus boundary polygon in OSM).  Keeps the highest-confidence representative.
+            if len(_gdf) > 0:
+                import pandas as _pd_dedup
+                import numpy as _np_dedup
+
+                def _coalesce_series(grp: "gpd.GeoDataFrame", col: str):
+                    """Return first non-null, non-empty value across a group for a column."""
+                    if col not in grp.columns:
+                        return grp.iloc[0].get(col) if len(grp) else None
+                    vals = grp[col].dropna()
+                    vals = vals[vals.astype(str).str.strip().ne("").ne("nan").ne("None")]
+                    return vals.iloc[0] if len(vals) > 0 else None
+
+                # ── Pass A: exact-coordinate duplicates ────────────────────────────
+                _gdf = _gdf.reset_index(drop=True)
+                _lat_r = _gdf.geometry.y.round(7)
+                _lon_r = _gdf.geometry.x.round(7)
+                _coord_key = _lat_r.astype(str) + "_" + _lon_r.astype(str)
+                _dup_coords = _coord_key[_coord_key.duplicated(keep=False)]
+                _n_exact_dups = _dup_coords.nunique()
+
+                if _n_exact_dups > 0:
+                    _keep_rows = []
+                    _processed = set()
+                    # Sort by confidence_score desc so the first row in each group is best
+                    _gdf_sorted = _gdf.assign(_coord_key=_coord_key).sort_values(
+                        "confidence_score", ascending=False
+                    ).reset_index(drop=True)
+                    _coord_key_s = _gdf_sorted["_coord_key"]
+
+                    for _ck, _grp in _gdf_sorted.groupby("_coord_key", sort=False):
+                        if _ck in _processed:
+                            continue
+                        _processed.add(_ck)
+                        if len(_grp) == 1:
+                            _keep_rows.append(_grp.iloc[0].to_dict())
+                            continue
+                        # Coalesce: first row (highest confidence) is primary; fill gaps from others
+                        _primary = _grp.iloc[0].to_dict()
+                        for _col in _grp.columns:
+                            if _col in ("_coord_key", "geometry"):
+                                continue
+                            _cur = _primary.get(_col)
+                            _is_empty = (
+                                _cur is None
+                                or (_pd_dedup.isna(_cur) if not isinstance(_cur, (dict, list)) else False)
+                                or str(_cur).strip() in ("", "nan", "None", "<NA>")
+                            )
+                            if _is_empty:
+                                _primary[_col] = _coalesce_series(_grp, _col)
+                        _keep_rows.append(_primary)
+
+                    _gdf = gpd.GeoDataFrame(_keep_rows, geometry="geometry", crs="EPSG:4326").drop(
+                        columns=["_coord_key"], errors="ignore"
+                    ).reset_index(drop=True)
+                    print(
+                        f"  exact-coord dedup: removed duplicates at {_n_exact_dups} location(s)"
+                        f" → {len(_gdf):,} rows remaining"
+                    )
+
+                # ── Pass B: near-duplicate spatial cluster at ≤10 m ───────────────
+                _NEAR_DUP_RADIUS_M = 10.0
+                if len(_gdf) > 1:
+                    try:
+                        from sklearn.neighbors import BallTree as _BallTree_dedup
+                        _gdf = _gdf.sort_values("confidence_score", ascending=False).reset_index(drop=True)
+                        _coords_rad = _np_dedup.radians(
+                            _np_dedup.column_stack([_gdf.geometry.y.values, _gdf.geometry.x.values])
+                        )
+                        _tree_dedup = _BallTree_dedup(_coords_rad, metric="haversine")
+                        _radius_rad = _NEAR_DUP_RADIUS_M / 6_371_000.0
+                        _keep_mask = _np_dedup.ones(len(_gdf), dtype=bool)
+                        for _i in range(len(_gdf)):
+                            if not _keep_mask[_i]:
+                                continue
+                            _neighbors = _tree_dedup.query_radius([_coords_rad[_i]], r=_radius_rad)[0]
+                            for _j in _neighbors:
+                                if _j > _i:
+                                    _keep_mask[_j] = False
+                        _n_near_removed = int((~_keep_mask).sum())
+                        if _n_near_removed > 0:
+                            _gdf = _gdf[_keep_mask].reset_index(drop=True)
+                            print(
+                                f"  near-duplicate dedup (≤{_NEAR_DUP_RADIUS_M:.0f}m): "
+                                f"removed {_n_near_removed} near-duplicate point(s)"
+                                f" → {len(_gdf):,} rows remaining"
+                            )
+                    except ImportError:
+                        pass  # sklearn not available; skip Pass B
+
             # Add osm_lifeline_id = lifeline_id so QA can display linkage info
             if "lifeline_id" in _gdf.columns and "osm_lifeline_id" not in _gdf.columns:
                 _gdf["osm_lifeline_id"] = _gdf["lifeline_id"]

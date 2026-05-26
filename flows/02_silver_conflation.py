@@ -513,7 +513,7 @@ def _(cfg, mo):
                         )
                         _master.at[_iloc, "source_provenance"] = "osm+overture"
                         _attr_rows.append({
-                            "poi_id": str(_master.at[_iloc, "poi_id"]),
+                            "lifeline_id": str(_master.at[_iloc, "lifeline_id"]),
                             "overture_id": _ov_id,
                             "overture_name": _ov_name,
                             "overture_taxonomy_l0": _l0,
@@ -529,7 +529,7 @@ def _(cfg, mo):
                             _uuid.uuid5(_uuid.NAMESPACE_URL, f"overture:{_ov_id}")
                         )
                         _new_row = {
-                            "poi_id": _new_id,
+                            "lifeline_id": _new_id,
                             "display_name": str(_ov_name).strip() if _ov_name else "Unknown Hospital",
                             "geometry": _geom,
                             "confidence_score": min(1.0, float(getattr(_ov_row, "confidence", 0.5)) + 0.15),
@@ -540,7 +540,7 @@ def _(cfg, mo):
                         }
                         _new_pois.append(_new_row)
                         _attr_rows.append({
-                            "poi_id": _new_id,
+                            "lifeline_id": _new_id,
                             "overture_id": _ov_id,
                             "overture_name": _ov_name,
                             "overture_taxonomy_l0": _l0,

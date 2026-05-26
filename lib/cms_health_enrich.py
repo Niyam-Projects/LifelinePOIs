@@ -113,8 +113,11 @@ def _normalize_name(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     # Remove trailing 'inc'
     name = re.sub(r" inc$", "", name)
-    # Expand abbreviations
-    abbr = {"ctr": "center", "med": "medical", "univ": "university", "dept": "department"}
+    # Expand abbreviations — "st" → "saint" standardises "ST LUCIE" ↔ "Saint Lucie",
+    # "St. Mary's" ↔ "Saint Marys", etc., where "st" is always a saint prefix in
+    # US hospital names.
+    abbr = {"ctr": "center", "med": "medical", "univ": "university", "dept": "department",
+            "st": "saint", "hosp": "hospital", "mun": "municipal", "munic": "municipal"}
     # Remove Spanish filler prepositions/articles common in hospital names
     _stopwords = {"de", "del", "la", "el", "los", "las"}
     words = [abbr.get(w, w) for w in name.split() if w not in _stopwords]
@@ -122,10 +125,104 @@ def _normalize_name(name: str) -> str:
     # Remove/reorder 'hospital' at start/end
     if name.startswith("hospital "):
         name = name[len("hospital "):]
-    if name.endswith(" hospital"):
-        name = name[:-len(" hospital")]
+    # Strip combined suffix " hospital and medical center" before individual terms.
+    # Keep standalone " medical center" intact — it's often a unique identifier.
+    if name.endswith(" hospital and medical center"):
+        name = name[: -len(" hospital and medical center")]
+    elif name.endswith(" hospital and medical centre"):
+        name = name[: -len(" hospital and medical centre")]
+    elif name.endswith(" hospital"):
+        name = name[: -len(" hospital")]
+    # Strip common health-system suffixes so "Tallahassee Memorial HealthCare"
+    # normalizes to the same root as "Tallahassee Memorial Hospital".
+    for _suffix in (" healthcare", " health care", " health system", " health sciences", " health science"):
+        if name.endswith(_suffix):
+            name = name[: -len(_suffix)]
+            break
     name = name.strip()
     return name
+
+
+# Organisation-prefix patterns stripped when rescoring ZIP-constrained candidates.
+# Many US hospital chains (HCA Florida, AdventHealth / former Florida Hospital)
+# rebrand facilities without OSM being updated, leaving name mismatches that
+# standard fuzzy scoring can't bridge.  Stripping these prefixes is safe only
+# within a single ZIP code where the remaining location token is unique.
+_BRAND_PREFIXES: tuple[str, ...] = (
+    "hca florida ",
+    "hca healthcare ",
+    "hca ",
+    "adventhealth by florida hospital ",
+    "adventhealth ",
+    "florida hospital ",
+    "orlando health ",
+    "baycare ",
+    "uf health ",
+    "university of florida health ",
+)
+
+
+def _strip_brand(n: str) -> str:
+    """Strip a known org/chain prefix from a normalised hospital name.
+
+    Returns the original string unchanged if no prefix matches or if stripping
+    would leave an empty string (e.g. the name *is* the brand alone).
+    """
+    for p in _BRAND_PREFIXES:
+        if n.startswith(p):
+            result = n[len(p):]
+            return result if result else n
+    return n
+
+
+def _apply_adj_penalty(raw_scores: list[float], df: "pd.DataFrame", penalty: float = 0.75) -> list[float]:
+    """Apply 0-bed category-01 penalty to raw fuzzy scores for pre-filter use.
+
+    Category-01 (short-term general hospital) records with zero beds are
+    typically historical/closed records that should lose to active beds>0
+    records.  Penalising them here prevents them from blocking fallthrough to
+    broader tiers (e.g. tier2c state-level) when a better match exists there.
+    """
+    is_hosp = (
+        df["PRVDR_CTGRY_CD"].fillna("").astype(str).eq("01").tolist()
+        if "PRVDR_CTGRY_CD" in df.columns
+        else [False] * len(df)
+    )
+    beds = (
+        pd.to_numeric(df["BED_CNT"], errors="coerce").fillna(0).tolist()
+        if "BED_CNT" in df.columns
+        else [0.0] * len(df)
+    )
+    return [
+        s * (penalty if h and b == 0 else 1.0)
+        for s, h, b in zip(raw_scores, is_hosp, beds)
+    ]
+
+
+def _build_prvdr_to_row(cms: "pd.DataFrame") -> dict:
+    """Build a PRVDR_NUM → full CMS row lookup.
+
+    When the same provider number appears in multiple rows (e.g. a current and a
+    historical record), keep the row with the *highest* BED_CNT so that a
+    correctly-matched provider is not assigned zero beds just because an
+    older zero-bed record happened to appear first in the file.
+    """
+    prvdr_to_row: dict = {}
+    if "PRVDR_NUM" not in cms.columns:
+        return prvdr_to_row
+    for _, row in cms.iterrows():
+        pn = str(row.get("PRVDR_NUM", "") or "")
+        if not pn:
+            continue
+        existing = prvdr_to_row.get(pn)
+        if existing is None:
+            prvdr_to_row[pn] = row
+        else:
+            new_beds = pd.to_numeric(row.get("BED_CNT"), errors="coerce")
+            old_beds = pd.to_numeric(existing.get("BED_CNT"), errors="coerce")
+            if pd.notna(new_beds) and (pd.isna(old_beds) or new_beds > old_beds):
+                prvdr_to_row[pn] = row
+    return prvdr_to_row
 
 
 def _detect_cnt_columns(df: pd.DataFrame) -> list[str]:
@@ -240,6 +337,7 @@ def _tier1_spatial(
     spatial_distance_m: float,
     spatial_name_threshold: float,
     cnt_cols: list[str],
+    already_matched: "set[str] | frozenset[str]" = frozenset(),
 ) -> tuple[list[dict], set[str]]:
     """
     Match silver health POIs to CMS records using geocoded coordinates.
@@ -294,10 +392,10 @@ def _tier1_spatial(
         for geom in health_proj.geometry
     ])
 
+    k = min(10, len(cms_geo))
     tree = BallTree(cms_coords, metric="euclidean")
-    distances, indices = tree.query(health_coords, k=1)
-    distances = distances.flatten()
-    indices = indices.flatten()
+    distances, indices = tree.query(health_coords, k=k)
+    # distances/indices shape: (n_health, k)
 
     results: list[dict] = []
     matched_ids: set[str] = set()
@@ -306,20 +404,154 @@ def _tier1_spatial(
     lids = health_with_geom["lifeline_id"].tolist()
     names = health_with_geom["_name_norm"].tolist()
 
-    for i, (lid, h_name, dist, idx) in enumerate(zip(lids, names, distances, indices)):
-        if dist > spatial_distance_m:
+    for i, (lid, h_name) in enumerate(zip(lids, names)):
+        if lid in already_matched:
             continue
-        candidate = cms_geo_reset.iloc[int(idx)]
         if not h_name:
             continue
-        cms_name = str(candidate.get("_name_norm", "") or "")
-        name_score = fuzz.token_sort_ratio(h_name, cms_name) / 100.0
-        if name_score < spatial_name_threshold:
-            continue
-        results.append(_build_result_row(lid, candidate, name_score, "spatial", float(dist), cnt_cols))
-        matched_ids.add(lid)
+        best_score: float = -1.0
+        best_candidate = None
+        best_dist: float = 0.0
+
+        for j in range(k):
+            dist = float(distances[i, j])
+            if dist > spatial_distance_m:
+                break  # BallTree results are sorted by distance; no closer ones remain
+            candidate = cms_geo_reset.iloc[int(indices[i, j])]
+            cms_name = str(candidate.get("_name_norm", "") or "")
+            # Use max of sort and set ratios so spatially-close pairs where the
+            # OSM name has extra words (e.g. "aventura hospital and medical center"
+            # vs "hca florida aventura") still pass the name-similarity gate.
+            name_score = max(
+                fuzz.token_sort_ratio(h_name, cms_name),
+                fuzz.token_set_ratio(h_name, cms_name),
+            ) / 100.0
+            if name_score < spatial_name_threshold:
+                continue
+            # Tie-breaker: prefer higher name score, then general hospital category, then bed count
+            is_hosp = int(str(candidate.get("PRVDR_CTGRY_CD", "") or "") == "01")
+            beds = int(candidate.get("BED_CNT") or 0) if pd.notna(candidate.get("BED_CNT")) else 0
+            if best_candidate is None or (
+                name_score > best_score
+                or (name_score == best_score and is_hosp > int(
+                    str(best_candidate.get("PRVDR_CTGRY_CD", "") or "") == "01"
+                ))
+                or (name_score == best_score
+                    and str(candidate.get("PRVDR_CTGRY_CD", "") or "") == str(best_candidate.get("PRVDR_CTGRY_CD", "") or "")
+                    and beds > (int(best_candidate.get("BED_CNT") or 0) if pd.notna(best_candidate.get("BED_CNT")) else 0))
+            ):
+                best_score = name_score
+                best_candidate = candidate
+                best_dist = dist
+
+        if best_candidate is not None:
+            results.append(_build_result_row(lid, best_candidate, best_score, "spatial", best_dist, cnt_cols))
+            matched_ids.add(lid)
 
     return results, matched_ids
+
+
+# ---------------------------------------------------------------------------
+# DuckDB-backed state-only join helper
+# ---------------------------------------------------------------------------
+
+def _duckdb_fuzzy_state_join(
+    left: "pd.DataFrame",
+    right: "pd.DataFrame",
+    left_state_col: str,
+    right_state_col: str,
+    left_name_col: str,
+    right_name_col: str,
+    threshold: float = 0.80,
+    scorer: str = "token_sort_ratio",
+) -> "pd.DataFrame":
+    """Inner join on a state column with a rapidfuzz name-similarity filter
+    executed entirely inside DuckDB to avoid materialising a huge Cartesian
+    product in pandas memory.
+
+    Semantically equivalent to::
+
+        left.merge(right, left_on=left_state_col, right_on=right_state_col,
+                   how="inner")
+        # followed by filtering on fuzz.<scorer>(name_col) >= threshold
+
+    DuckDB applies the Python UDF as part of the join evaluation so that
+    only candidate pairs that pass ``threshold`` are ever returned to Python.
+    This keeps peak memory proportional to the *match count* rather than the
+    full Cartesian product (which can reach 80 M+ rows for Florida/PR data).
+
+    ``scorer`` must be one of ``"token_sort_ratio"`` or ``"token_set_ratio"``.
+    The caller may still re-score the returned DataFrame for tiebreaking —
+    the pre-filter is exact so no valid matches are dropped.
+
+    Column-collision handling mirrors ``pd.DataFrame.merge``:
+
+    * When ``left_state_col == right_state_col`` the join key is kept once
+      (from the left side) and dropped from the right.
+    * Any other columns present in both DataFrames are suffixed ``_x``
+      (left) and ``_y`` (right).
+    """
+    import duckdb
+    from rapidfuzz import fuzz as _fuzz
+
+    if scorer == "max_sort_set":
+        def _scorer_fn(a: str, b: str) -> float:
+            return max(_fuzz.token_sort_ratio(a, b), _fuzz.token_set_ratio(a, b))
+    else:
+        _scorer_fn = getattr(_fuzz, scorer)
+
+    # Tiny sentinel tables — DuckDB only needs the name + state + row index.
+    left_mini = pd.DataFrame({
+        "__lidx": range(len(left)),
+        "__lname": left[left_name_col].fillna("").astype(str).values,
+        "__lstate": left[left_state_col].fillna("").astype(str).values,
+    })
+    right_mini = pd.DataFrame({
+        "__ridx": range(len(right)),
+        "__rname": right[right_name_col].fillna("").astype(str).values,
+        "__rstate": right[right_state_col].fillna("").astype(str).values,
+    })
+
+    con = duckdb.connect()
+    con.register("__lmini", left_mini)
+    con.register("__rmini", right_mini)
+    # Register the rapidfuzz scorer as a DuckDB Python UDF so the filter is
+    # evaluated inside DuckDB's join loop — no 80 M-row intermediate table.
+    con.create_function(
+        "__fuzzy_score",
+        lambda a, b: _scorer_fn(str(a), str(b)) / 100.0,
+        [str, str],
+        float,
+    )
+    try:
+        pairs = con.execute(
+            f"""
+            SELECT l.__lidx AS _l, r.__ridx AS _r
+            FROM __lmini l
+            INNER JOIN __rmini r ON l.__lstate = r.__rstate
+            WHERE __fuzzy_score(l.__lname, r.__rname) >= {threshold:.6f}
+            """
+        ).fetchdf()
+    finally:
+        con.close()
+
+    if len(pairs) == 0:
+        return pd.DataFrame()
+
+    left_sel = left.iloc[pairs["_l"].values].reset_index(drop=True)
+    right_sel = right.iloc[pairs["_r"].values].reset_index(drop=True)
+
+    # Drop the join key from right when both sides share the same column name.
+    if left_state_col == right_state_col:
+        right_sel = right_sel.drop(columns=[right_state_col], errors="ignore")
+
+    # Rename colliding columns (_x / _y) to match pandas merge behaviour.
+    collision_cols = sorted(set(left_sel.columns) & set(right_sel.columns))
+    if collision_cols:
+        left_sel = left_sel.rename(columns={c: f"{c}_x" for c in collision_cols})
+        right_sel = right_sel.rename(columns={c: f"{c}_y" for c in collision_cols})
+
+    return pd.concat([left_sel, right_sel], axis=1).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +593,7 @@ def _tier2_zip_fuzzy(
     cms_m = cms.rename(columns={"_name_norm": "_cms_name"})
 
     keep = ["_state", "_zip5", "_city_norm", "_cms_name"] + [
-        c for c in cnt_cols + ["PRVDR_NUM"] if c in cms_m.columns
+        c for c in cnt_cols + ["PRVDR_NUM", "PRVDR_CTGRY_CD"] if c in cms_m.columns
     ]
     keep = list(dict.fromkeys(keep))  # deduplicate, preserve order
     cms_m = cms_m[[c for c in keep if c in cms_m.columns]]
@@ -377,8 +609,22 @@ def _tier2_zip_fuzzy(
     h_zip = health_m[health_m["_zip5"].str.len() == 5]
     tier2a = h_zip.merge(cms_m, on=["_state", "_zip5"], how="inner") if len(h_zip) else pd.DataFrame()
 
-    # ── Tier 2a': ZIP only (for POIs where _state is empty) ──────────────
+    # Pre-score Tier 2a to identify hospitals that ACTUALLY matched above threshold.
+    # Hospitals that had ZIP candidates but no match above threshold should still
+    # fall through to city/state-only tiers (e.g. Halifax Health: zip 32117 vs CMS 32114).
+    if len(tier2a) > 0:
+        _t2a_scores = [
+            max(fuzz.token_sort_ratio(str(a), str(b)), fuzz.token_set_ratio(str(a), str(b))) / 100.0
+            for a, b in zip(tier2a["_name_norm"].tolist(), tier2a["_cms_name"].fillna("").tolist())
+        ]
+        _t2a_adj = _apply_adj_penalty(_t2a_scores, tier2a)
+        zip_matched_ids = set(tier2a.loc[[s >= threshold for s in _t2a_adj], "lifeline_id"])
+    else:
+        zip_matched_ids = set()
+    # zip_ids tracks all hospitals that had ZIP+state candidates (for dedup only)
     zip_ids = set(tier2a["lifeline_id"]) if len(tier2a) else set()
+
+    # ── Tier 2a': ZIP only (for POIs where _state is empty) ──────────────
     h_zip_nostate = h_zip[~h_zip["lifeline_id"].isin(zip_ids) & (h_zip["_state"] == "")]
     zip_only_cols = [c for c in ["_zip5", "_cms_name", "PRVDR_NUM"] + [
         c for c in cms_m.columns if c not in ("_state", "_city_norm")
@@ -389,10 +635,20 @@ def _tier2_zip_fuzzy(
         if len(h_zip_nostate)
         else pd.DataFrame()
     )
+    if len(tier2a_nostate) > 0:
+        _t2a_ns_scores = [
+            max(fuzz.token_sort_ratio(str(a), str(b)), fuzz.token_set_ratio(str(a), str(b))) / 100.0
+            for a, b in zip(tier2a_nostate["_name_norm"].tolist(), tier2a_nostate["_cms_name"].fillna("").tolist())
+        ]
+        _t2a_ns_adj = _apply_adj_penalty(_t2a_ns_scores, tier2a_nostate)
+        zip_matched_ids |= set(tier2a_nostate.loc[[s >= threshold for s in _t2a_ns_adj], "lifeline_id"])
     zip_ids = zip_ids | (set(tier2a_nostate["lifeline_id"]) if len(tier2a_nostate) else set())
 
-    # ── Tier 2b: state + city (zip had no candidates) ─────────────────────
-    h_city = h_zip[~h_zip["lifeline_id"].isin(zip_ids) & (h_zip["_city"] != "")]
+    # ── Tier 2b: state + city ─────────────────────────────────────────────
+    # Run for hospitals that either had no ZIP candidates OR had ZIP candidates
+    # but none scored above threshold (zip_ids minus zip_matched_ids).
+    h_city_excl = zip_matched_ids  # only exclude hospitals that actually matched in 2a
+    h_city = h_zip[~h_zip["lifeline_id"].isin(h_city_excl) & (h_zip["_city"] != "")]
     if "_city_norm" in cms_m.columns and len(h_city):
         tier2b = h_city.merge(
             cms_m, left_on=["_state", "_city"], right_on=["_state", "_city_norm"], how="inner"
@@ -400,36 +656,123 @@ def _tier2_zip_fuzzy(
     else:
         tier2b = pd.DataFrame()
 
+    # Pre-score Tier 2b to identify hospitals that ACTUALLY matched above threshold.
+    # Like the ZIP fallthrough fix, hospitals with city candidates that don't score
+    # above threshold (e.g. Morton Plant in "LUTZ" matching only irrelevant facilities)
+    # must still fall through to the state-only tier.
+    if len(tier2b) > 0:
+        _t2b_scores = [
+            max(fuzz.token_sort_ratio(str(a), str(b)), fuzz.token_set_ratio(str(a), str(b))) / 100.0
+            for a, b in zip(tier2b["_name_norm"].tolist(), tier2b["_cms_name"].fillna("").tolist())
+        ]
+        _t2b_adj = _apply_adj_penalty(_t2b_scores, tier2b)
+        city_matched_ids = zip_matched_ids | set(tier2b.loc[[s >= threshold for s in _t2b_adj], "lifeline_id"])
+    else:
+        city_matched_ids = zip_matched_ids
+
     # ── Tier 2c: state only ───────────────────────────────────────────────
-    city_ids = zip_ids | (set(tier2b["lifeline_id"]) if len(tier2b) else set())
-    h_state = health_m[~health_m["lifeline_id"].isin(city_ids) & (health_m["_state"] != "")]
-    tier2c = h_state.merge(cms_m, on="_state", how="inner") if len(h_state) else pd.DataFrame()
+    # Use DuckDB with a rapidfuzz UDF to avoid materialising the full
+    # state-level Cartesian product in pandas memory (can be 80 M+ rows).
+    # Include all unmatched hospitals with a known state — not just those
+    # without ZIP candidates — so that ZIP-miss cases (hospital in CMS at a
+    # different ZIP) still get a chance at the state-level name search.
+    # Use max(token_sort_ratio, token_set_ratio) so subset-name pairs pass.
+    h_state = health_m[~health_m["lifeline_id"].isin(city_matched_ids) & (health_m["_state"] != "")]
+    tier2c = (
+        _duckdb_fuzzy_state_join(
+            h_state, cms_m,
+            left_state_col="_state", right_state_col="_state",
+            left_name_col="_name_norm", right_name_col="_cms_name",
+            threshold=threshold, scorer="max_sort_set",
+        )
+        if len(h_state) else pd.DataFrame()
+    )
+
+    # Tag ZIP-constrained rows so the brand-rescore pass below can identify them.
+    if len(tier2a) > 0:
+        tier2a = tier2a.copy()
+        tier2a["_from_zip"] = True
+    if len(tier2a_nostate) > 0:
+        tier2a_nostate = tier2a_nostate.copy()
+        tier2a_nostate["_from_zip"] = True
 
     candidates = pd.concat([tier2a, tier2a_nostate, tier2b, tier2c], ignore_index=True)
 
     # Build prvdr_to_row lookup unconditionally (needed by both 2a–2c and Tier 2d)
-    prvdr_to_row: dict = {}
-    if "PRVDR_NUM" in cms.columns:
-        for _, row in cms.iterrows():
-            pn = str(row.get("PRVDR_NUM", "") or "")
-            if pn and pn not in prvdr_to_row:
-                prvdr_to_row[pn] = row
+    prvdr_to_row = _build_prvdr_to_row(cms)
 
     results: list[dict] = []
 
     if len(candidates) > 0:
         cms_names = candidates["_cms_name"].fillna("").tolist()
         health_names = candidates["_name_norm"].tolist()
+        # Use max(token_sort_ratio, token_set_ratio) so subset-name cases like
+        # "Tallahassee Memorial HealthCare" vs "Tallahassee Memorial" still score
+        # highly even when the shorter string is a complete subset of the longer.
         candidates["_score"] = [
-            fuzz.token_sort_ratio(a, b) / 100.0
+            max(fuzz.token_sort_ratio(a, b), fuzz.token_set_ratio(a, b)) / 100.0
             for a, b in zip(health_names, cms_names)
         ]
 
+        # Brand-prefix-aware rescoring for ZIP-constrained candidates only.
+        # When an OSM hospital name and its CMS counterpart differ only by a
+        # chain-prefix rebranding (e.g. "JFK Medical Center" vs
+        # "HCA FLORIDA JFK HOSPITAL", or "Florida Hospital DeLand" vs
+        # "ADVENTHEALTH DELAND"), stripping the prefix before scoring can bridge
+        # the gap.  We restrict this to ZIP-constrained rows (_from_zip=True)
+        # because the stripped short names (e.g. "jfk", "deland") are only
+        # unique within a single ZIP — applying brand-stripping at state level
+        # would cause false positives across distant same-chain facilities.
+        _from_zip_mask = candidates.get("_from_zip", pd.Series(False, index=candidates.index)).fillna(False).astype(bool)
+        _below_mask = candidates["_score"] < threshold
+        _rescore_mask = _from_zip_mask & _below_mask
+        if _rescore_mask.any():
+            _rh = candidates.loc[_rescore_mask, "_name_norm"].fillna("").apply(_strip_brand)
+            _rc = candidates.loc[_rescore_mask, "_cms_name"].fillna("").apply(_strip_brand)
+            _changed = (_rh != candidates.loc[_rescore_mask, "_name_norm"].fillna("")) | \
+                       (_rc != candidates.loc[_rescore_mask, "_cms_name"].fillna(""))
+            if _changed.any():
+                _ci = _rh[_changed].index
+                _brand_scores = pd.Series(
+                    [max(fuzz.token_sort_ratio(a, b), fuzz.token_set_ratio(a, b)) / 100.0
+                     for a, b in zip(_rh[_changed].tolist(), _rc[_changed].tolist())],
+                    index=_ci,
+                )
+                candidates.loc[_ci, "_score"] = candidates.loc[_ci, "_score"].combine(_brand_scores, max)
+
         candidates = candidates[candidates["_score"] >= threshold]
+        if len(candidates) > 0:
+            candidates = candidates.copy()
+            _cn = candidates["_cms_name"].fillna("").tolist()
+            _hn = candidates["_name_norm"].tolist()
+            candidates["_sort_score"] = [fuzz.token_set_ratio(a, b) / 100.0 for a, b in zip(_hn, _cn)]
+            candidates["_is_hosp"] = (
+                candidates["PRVDR_CTGRY_CD"].fillna("").astype(str).eq("01").astype(int)
+                if "PRVDR_CTGRY_CD" in candidates.columns else 0
+            )
+            candidates["_beds"] = (
+                pd.to_numeric(candidates["BED_CNT"], errors="coerce").fillna(0)
+                if "BED_CNT" in candidates.columns else 0
+            )
+            # Penalise 0-bed category-01 (hospital) records so that when an old
+            # zero-bed historical record and an active beds>0 record are both
+            # candidates, the active record wins even at a slightly lower name score.
+            # (e.g. "SACRED HEART HOSPITAL OF PENSACOLA, FLORIDA" (0 beds) vs
+            # "ASCENSION SACRED HEART PENSACOLA" (547 beds) for the same facility)
+            candidates["_score_adj"] = [
+                score * (0.75 if is_hosp == 1 and beds == 0 else 1.0)
+                for score, is_hosp, beds in zip(
+                    candidates["_score"].tolist(),
+                    candidates["_is_hosp"].tolist(),
+                    candidates["_beds"].tolist(),
+                )
+            ]
+            candidates = candidates[candidates["_score_adj"] >= threshold]
         if len(candidates) > 0:
             best = (
                 candidates
-                .sort_values("_score", ascending=False)
+                .sort_values(["_score_adj", "_is_hosp", "_sort_score", "_beds"],
+                             ascending=[False, False, False, False])
                 .drop_duplicates("lifeline_id")
                 .reset_index(drop=True)
             )
@@ -458,25 +801,43 @@ def _tier2_zip_fuzzy(
             )
             h_2d = h_2d[h_2d["_extracted_state"] != ""]
         if len(h_2d) > 0:
-            tier2d_candidates = h_2d.merge(
-                cms_m, left_on="_extracted_state", right_on="_state", how="inner"
-            )
+            tier2d_candidates = _duckdb_fuzzy_state_join(
+                    h_2d, cms_m,
+                    left_state_col="_extracted_state", right_state_col="_state",
+                    left_name_col="_name_norm", right_name_col="_cms_name",
+                    threshold=_TIER2D_SET_THRESHOLD, scorer="token_set_ratio",
+                )
             if len(tier2d_candidates) > 0:
                 tier2d_candidates = tier2d_candidates.copy()
+                _t2d_hn = tier2d_candidates["_name_norm"].fillna("").tolist()
+                _t2d_cn = tier2d_candidates["_cms_name"].fillna("").tolist()
                 tier2d_candidates["_score"] = [
                     fuzz.token_set_ratio(str(a), str(b)) / 100.0
-                    for a, b in zip(
-                        tier2d_candidates["_name_norm"].fillna("").tolist(),
-                        tier2d_candidates["_cms_name"].fillna("").tolist(),
-                    )
+                    for a, b in zip(_t2d_hn, _t2d_cn)
                 ]
                 tier2d_candidates = tier2d_candidates[
                     tier2d_candidates["_score"] >= _TIER2D_SET_THRESHOLD
                 ]
             if len(tier2d_candidates) > 0:
+                tier2d_candidates = tier2d_candidates.copy()
+                _t2d_hn2 = tier2d_candidates["_name_norm"].fillna("").tolist()
+                _t2d_cn2 = tier2d_candidates["_cms_name"].fillna("").tolist()
+                tier2d_candidates["_sort_score"] = [
+                    fuzz.token_sort_ratio(str(a), str(b)) / 100.0
+                    for a, b in zip(_t2d_hn2, _t2d_cn2)
+                ]
+                tier2d_candidates["_is_hosp"] = (
+                    tier2d_candidates["PRVDR_CTGRY_CD"].fillna("").astype(str).eq("01").astype(int)
+                    if "PRVDR_CTGRY_CD" in tier2d_candidates.columns else 0
+                )
+                tier2d_candidates["_beds"] = (
+                    pd.to_numeric(tier2d_candidates["BED_CNT"], errors="coerce").fillna(0)
+                    if "BED_CNT" in tier2d_candidates.columns else 0
+                )
                 tier2d_best = (
                     tier2d_candidates
-                    .sort_values("_score", ascending=False)
+                    .sort_values(["_score", "_sort_score", "_is_hosp", "_beds"],
+                                 ascending=[False, False, False, False])
                     .drop_duplicates("lifeline_id")
                     .reset_index(drop=True)
                 )
@@ -519,9 +880,25 @@ def _tier2_zip_fuzzy(
                     tier2e_candidates["_score"] >= threshold
                 ]
             if len(tier2e_candidates) > 0:
+                tier2e_candidates = tier2e_candidates.copy()
+                _t2e_hn = tier2e_candidates["_name_norm"].fillna("").tolist()
+                _t2e_cn = tier2e_candidates["_cms_name"].fillna("").tolist()
+                tier2e_candidates["_sort_score"] = [
+                    fuzz.token_sort_ratio(str(a), str(b)) / 100.0
+                    for a, b in zip(_t2e_hn, _t2e_cn)
+                ]
+                tier2e_candidates["_is_hosp"] = (
+                    tier2e_candidates["PRVDR_CTGRY_CD"].fillna("").astype(str).eq("01").astype(int)
+                    if "PRVDR_CTGRY_CD" in tier2e_candidates.columns else 0
+                )
+                tier2e_candidates["_beds"] = (
+                    pd.to_numeric(tier2e_candidates["BED_CNT"], errors="coerce").fillna(0)
+                    if "BED_CNT" in tier2e_candidates.columns else 0
+                )
                 tier2e_best = (
                     tier2e_candidates
-                    .sort_values("_score", ascending=False)
+                    .sort_values(["_score", "_sort_score", "_is_hosp", "_beds"],
+                                 ascending=[False, False, False, False])
                     .drop_duplicates("lifeline_id")
                     .reset_index(drop=True)
                 )
@@ -567,6 +944,20 @@ def _enrich_health_addr(health: "pd.DataFrame", silver_path: Path) -> "pd.DataFr
         if col not in attr.columns:
             attr[col] = ""
         attr[col] = attr[col].fillna("").astype(str).str.strip()
+
+    # Deduplicate attr by lifeline_id: prefer rows with more address fields filled in.
+    # attr_health.parquet can have multiple rows per lifeline_id (e.g. campus sub-features
+    # that were collapsed out of lifeline_points.parquet but kept in the attr table).
+    # Without this, the left-merge below produces more rows than health, causing a
+    # Boolean index length mismatch on the .loc[] assignment.
+    _completeness = attr[addr_cols].apply(lambda s: s.str.len() > 0).sum(axis=1)
+    attr = (
+        attr.assign(_completeness=_completeness)
+        .sort_values("_completeness", ascending=False)
+        .drop_duplicates(subset="lifeline_id", keep="first")
+        .drop(columns=["_completeness"])
+        .reset_index(drop=True)
+    )
 
     # Left-join: only update rows where current value is empty
     merged = health.merge(
@@ -630,7 +1021,7 @@ def _tier3_addr_zip(
         return []
 
     cms_renamed = cms_m.rename(columns={"_name_norm": "_cms_name"})
-    keep_cols = [c for c in ["_zip5", "_addr_num", "_cms_name", "PRVDR_NUM"] + cnt_cols if c in cms_renamed.columns]
+    keep_cols = [c for c in ["_zip5", "_addr_num", "_cms_name", "PRVDR_NUM", "PRVDR_CTGRY_CD"] + cnt_cols if c in cms_renamed.columns]
     cms_sub = cms_renamed[keep_cols].copy()
 
     # Primary join: addr_num + ZIP
@@ -680,18 +1071,27 @@ def _tier3_addr_zip(
     if len(candidates) == 0:
         return []
 
+    candidates = candidates.copy()
+    _t3_hn = candidates["_name_norm"].fillna("").tolist()
+    _t3_cn = candidates["_cms_name"].fillna("").tolist()
+    candidates["_sort_score"] = [fuzz.token_set_ratio(str(a), str(b)) / 100.0 for a, b in zip(_t3_hn, _t3_cn)]
+    candidates["_is_hosp"] = (
+        candidates["PRVDR_CTGRY_CD"].fillna("").astype(str).eq("01").astype(int)
+        if "PRVDR_CTGRY_CD" in candidates.columns else 0
+    )
+    candidates["_beds"] = (
+        pd.to_numeric(candidates["BED_CNT"], errors="coerce").fillna(0)
+        if "BED_CNT" in candidates.columns else 0
+    )
     best = (
-        candidates.sort_values("_score", ascending=False)
+        candidates
+        .sort_values(["_score", "_sort_score", "_is_hosp", "_beds"],
+                     ascending=[False, False, False, False])
         .drop_duplicates("lifeline_id")
         .reset_index(drop=True)
     )
 
-    prvdr_to_row: dict = {}
-    if "PRVDR_NUM" in cms.columns:
-        for _, row in cms.iterrows():
-            pn = str(row.get("PRVDR_NUM", "") or "")
-            if pn and pn not in prvdr_to_row:
-                prvdr_to_row[pn] = row
+    prvdr_to_row = _build_prvdr_to_row(cms)
 
     results: list[dict] = []
     for _, brow in best.iterrows():
@@ -751,7 +1151,7 @@ def _tier4_name_zip(
         return []
 
     cms_m = cms_m.rename(columns={"_name_norm": "_cms_name"})
-    keep_cols = [c for c in ["_zip5", "_cms_name", "PRVDR_NUM"] + cnt_cols if c in cms_m.columns]
+    keep_cols = [c for c in ["_zip5", "_cms_name", "PRVDR_NUM", "PRVDR_CTGRY_CD"] + cnt_cols if c in cms_m.columns]
     cms_sub = cms_m[list(dict.fromkeys(keep_cols))].copy()
 
     candidates = health_m.merge(cms_sub, on="_zip5", how="inner")
@@ -769,18 +1169,27 @@ def _tier4_name_zip(
     if len(candidates) == 0:
         return []
 
+    candidates = candidates.copy()
+    _t4_hn = candidates["_name_norm"].fillna("").tolist()
+    _t4_cn = candidates["_cms_name"].fillna("").tolist()
+    candidates["_sort_score"] = [fuzz.token_sort_ratio(str(a), str(b)) / 100.0 for a, b in zip(_t4_hn, _t4_cn)]
+    candidates["_is_hosp"] = (
+        candidates["PRVDR_CTGRY_CD"].fillna("").astype(str).eq("01").astype(int)
+        if "PRVDR_CTGRY_CD" in candidates.columns else 0
+    )
+    candidates["_beds"] = (
+        pd.to_numeric(candidates["BED_CNT"], errors="coerce").fillna(0)
+        if "BED_CNT" in candidates.columns else 0
+    )
     best = (
-        candidates.sort_values("_score", ascending=False)
+        candidates
+        .sort_values(["_score", "_sort_score", "_is_hosp", "_beds"],
+                     ascending=[False, False, False, False])
         .drop_duplicates("lifeline_id")
         .reset_index(drop=True)
     )
 
-    prvdr_to_row: dict = {}
-    if "PRVDR_NUM" in cms.columns:
-        for _, row in cms.iterrows():
-            pn = str(row.get("PRVDR_NUM", "") or "")
-            if pn and pn not in prvdr_to_row:
-                prvdr_to_row[pn] = row
+    prvdr_to_row = _build_prvdr_to_row(cms)
 
     results: list[dict] = []
     for _, brow in best.iterrows():
@@ -794,8 +1203,284 @@ def _tier4_name_zip(
 
 
 # ---------------------------------------------------------------------------
-# Silver state: CMS match state table
+# State resolution: fill missing _state via pygris Census boundaries
 # ---------------------------------------------------------------------------
+
+def _resolve_missing_states(health: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Dynamically resolve the US state/territory code for health POI rows where
+    ``_state`` is currently empty.
+
+    Uses ``pygris.states(cb=True)`` to fetch simplified Census state boundaries
+    (cached after first call) and performs an ``intersects`` spatial join against
+    the POI geometry to populate ``_state`` from the ``STUSPS`` column.
+
+    Only rows with both ``_state == ""`` and a valid geometry are processed.
+    Rows that still cannot be resolved are left as ``""``.
+
+    Returns the mutated DataFrame in-place (also returned for convenience).
+    """
+    missing_mask = health["_state"] == ""
+    if not missing_mask.any():
+        return health
+
+    try:
+        import pygris  # noqa: PLC0415
+        import geopandas as gpd  # noqa: PLC0415
+    except ImportError:
+        return health
+
+    has_geom = missing_mask & health.geometry.notna()
+    if not has_geom.any():
+        return health
+
+    try:
+        states_gdf = pygris.states(cb=True, cache=True).to_crs("EPSG:4326")
+    except Exception as exc:
+        print(f"    [pygris] Could not fetch state boundaries: {exc}")
+        return health
+
+    missing_gdf = gpd.GeoDataFrame(
+        health.loc[has_geom, ["lifeline_id"]].copy(),
+        geometry=health.loc[has_geom, "geometry"].values,
+        crs="EPSG:4326",
+    )
+    try:
+        joined = gpd.sjoin(missing_gdf, states_gdf[["STUSPS", "geometry"]], how="left", predicate="intersects")
+    except Exception as exc:
+        print(f"    [pygris] Spatial join failed: {exc}")
+        return health
+
+    lid_to_state = (
+        joined.dropna(subset=["STUSPS"])
+        .drop_duplicates("lifeline_id")
+        .set_index("lifeline_id")["STUSPS"]
+        .to_dict()
+    )
+    if lid_to_state:
+        health.loc[has_geom, "_state"] = (
+            health.loc[has_geom, "lifeline_id"].map(lid_to_state).fillna("").values
+        )
+        resolved = sum(1 for v in lid_to_state.values() if v)
+        print(f"    [pygris] Resolved {resolved:,} missing state values via Census boundaries")
+
+    return health
+
+
+# ---------------------------------------------------------------------------
+# Tier 5: Census geocode unmatched CMS + spatial + token_set_ratio name
+# ---------------------------------------------------------------------------
+
+_CENSUS_BATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
+_CENSUS_CHUNK_SIZE = 9_999
+
+
+def _geocode_cms_census(cms_ungeocoded: "pd.DataFrame") -> "dict[int, tuple[float, float]]":
+    """
+    Submit CMS rows to the US Census Bureau Batch Geocoding API.
+
+    Returns a mapping of DataFrame integer index → (lon, lat) for matched rows.
+    Only rows where ``STATE_CD`` is a US state (not US territories the Census API
+    cannot handle) are submitted; the rest are silently skipped.
+
+    If the API is unreachable or returns an error, logs a warning and returns an
+    empty dict — Tier 5 degrades gracefully.
+    """
+    try:
+        import httpx  # noqa: PLC0415
+        import csv as _csv  # noqa: PLC0415
+        import io as _io  # noqa: PLC0415
+    except ImportError:
+        return {}
+
+    _TERRITORY_CODES = frozenset({"VI", "GU", "MP", "AS", "PR"})
+    eligible_mask = ~cms_ungeocoded.get(
+        "STATE_CD", pd.Series("", index=cms_ungeocoded.index)
+    ).astype(str).str.strip().str.upper().isin(_TERRITORY_CODES)
+    eligible = cms_ungeocoded[eligible_mask]
+
+    if len(eligible) == 0:
+        return {}
+
+    all_indices = list(eligible.index)
+    results: dict[int, tuple[float, float]] = {}
+
+    for chunk_start in range(0, len(all_indices), _CENSUS_CHUNK_SIZE):
+        chunk_indices = all_indices[chunk_start: chunk_start + _CENSUS_CHUNK_SIZE]
+        chunk = eligible.loc[chunk_indices]
+
+        buf = _io.StringIO()
+        writer = _csv.writer(buf)
+        for idx, row in chunk.iterrows():
+            zip5 = str(row.get("ZIP_CD") or "").strip()[:5].zfill(5) if str(row.get("ZIP_CD") or "").strip() else ""
+            writer.writerow([
+                idx,
+                str(row.get("ST_ADR") or "").strip(),
+                str(row.get("CITY_NAME") or "").strip(),
+                str(row.get("STATE_CD") or "").strip().upper(),
+                zip5,
+            ])
+
+        try:
+            resp = httpx.post(
+                _CENSUS_BATCH_URL,
+                data={"benchmark": "Public_AR_Current"},
+                files={"addressFile": ("addresses.csv", buf.getvalue(), "text/csv")},
+                timeout=300,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            print(f"    [Tier5/Census] Batch geocode request failed: {exc}")
+            continue
+
+        for row in _csv.reader(_io.StringIO(resp.text)):
+            if len(row) < 3:
+                continue
+            try:
+                row_idx = int(row[0])
+            except ValueError:
+                continue
+            if row[2].strip() != "Match" or len(row) < 6:
+                continue
+            coords_str = row[5].strip()
+            if not coords_str:
+                continue
+            try:
+                lon_str, lat_str = coords_str.split(",", 1)
+                results[row_idx] = (float(lon_str.strip()), float(lat_str.strip()))
+            except ValueError:
+                continue
+
+    return results
+
+
+def _tier5_census_spatial(
+    health: "pd.DataFrame",
+    cms: "pd.DataFrame",
+    cnt_cols: list[str],
+    already_matched: "set[str]",
+    census_distance_m: float = 500.0,
+    census_name_threshold: float = 0.70,
+    cms_already_matched: "frozenset[str] | set[str]" = frozenset(),
+) -> list[dict]:
+    """
+    Tier 5 catch-all: geocode unmatched CMS providers via Census Batch API,
+    then spatial BallTree + ``token_set_ratio`` name match.
+
+    Targets CMS records that lack valid ``geocoded_lat/lon`` (those skipped by
+    Tier 1) and health POIs still unmatched after Tiers 1–4.  Uses a wider
+    search radius (default 500 m) and a higher ``token_set_ratio`` threshold
+    (default 0.70) to recover genuine matches that earlier tiers missed due to
+    geocoding gaps.
+
+    If the Census API is unreachable, returns an empty list (degrades gracefully).
+
+    Returns a results list with ``cms_match_method = "census_spatial"``.
+    """
+    try:
+        from rapidfuzz import fuzz  # noqa: PLC0415
+        from sklearn.neighbors import BallTree  # noqa: PLC0415
+        import geopandas as gpd  # noqa: PLC0415
+    except ImportError as exc:
+        raise ImportError("rapidfuzz, scikit-learn and geopandas are required") from exc
+
+    # Exclude already-matched CMS providers
+    if cms_already_matched and "PRVDR_NUM" in cms.columns:
+        cms = cms[~cms["PRVDR_NUM"].isin(cms_already_matched)].copy()
+
+    # Target: CMS providers WITHOUT valid geocoded coordinates
+    geocoded_mask = (
+        cms["geocoded_lat"].notna()
+        & cms["geocoded_lon"].notna()
+        & (cms.get("geocode_status", pd.Series("ok", index=cms.index)) == "ok")
+    )
+    cms_ungeocoded = cms[~geocoded_mask].copy()
+    if len(cms_ungeocoded) == 0:
+        return []
+
+    # Geocode via Census API
+    geocode_hits = _geocode_cms_census(cms_ungeocoded)
+    if not geocode_hits:
+        return []
+
+    # Build GeoDataFrame from newly geocoded CMS points
+    geocoded_rows = []
+    for idx, (lon, lat) in geocode_hits.items():
+        row = cms_ungeocoded.loc[idx].copy()
+        row["_census_lon"] = lon
+        row["_census_lat"] = lat
+        geocoded_rows.append(row)
+
+    cms_newly = pd.DataFrame(geocoded_rows).reset_index(drop=True)
+    cms_newly_gdf = gpd.GeoDataFrame(
+        cms_newly,
+        geometry=gpd.points_from_xy(cms_newly["_census_lon"], cms_newly["_census_lat"]),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3857")
+
+    # Health subset: unmatched POIs with valid geometry
+    health_m = health[
+        ~health["lifeline_id"].isin(already_matched)
+        & health.geometry.notna()
+        & (health["_name_norm"] != "")
+    ].copy()
+    if len(health_m) == 0:
+        return []
+
+    health_proj = health_m.copy()
+    if hasattr(health_proj, "crs") and health_proj.crs is not None:
+        health_proj = health_proj.to_crs("EPSG:3857")
+    else:
+        health_proj = gpd.GeoDataFrame(health_proj, geometry="geometry").set_crs("EPSG:4326").to_crs("EPSG:3857")
+
+    def _xy(geom):
+        if geom.geom_type == "Point":
+            return geom.x, geom.y
+        return geom.centroid.x, geom.centroid.y
+
+    cms_coords = np.array([_xy(g) for g in cms_newly_gdf.geometry])
+    health_coords = np.array([_xy(g) for g in health_proj.geometry])
+
+    k = min(10, len(cms_newly_gdf))
+    tree = BallTree(cms_coords, metric="euclidean")
+    distances, indices = tree.query(health_coords, k=k)
+
+    results: list[dict] = []
+    matched_ids: set[str] = set()
+    lids = health_m["lifeline_id"].tolist()
+    names = health_m["_name_norm"].tolist()
+
+    for i, (lid, h_name) in enumerate(zip(lids, names)):
+        best_score: float = -1.0
+        best_candidate = None
+        best_dist: float = 0.0
+
+        for j in range(k):
+            dist = float(distances[i, j])
+            if dist > census_distance_m:
+                break
+            candidate = cms_newly_gdf.iloc[int(indices[i, j])]
+            cms_name = str(candidate.get("_name_norm", "") or "")
+            name_score = fuzz.token_set_ratio(h_name, cms_name) / 100.0
+            if name_score < census_name_threshold:
+                continue
+            is_hosp = int(str(candidate.get("PRVDR_CTGRY_CD", "") or "") == "01")
+            beds = int(candidate.get("BED_CNT") or 0) if pd.notna(candidate.get("BED_CNT")) else 0
+            best_is_hosp = int(str(best_candidate.get("PRVDR_CTGRY_CD", "") or "") == "01") if best_candidate is not None else 0
+            best_beds = int(best_candidate.get("BED_CNT") or 0) if best_candidate is not None and pd.notna(best_candidate.get("BED_CNT")) else 0
+            if best_candidate is None or name_score > best_score or (
+                name_score == best_score and (is_hosp > best_is_hosp or (is_hosp == best_is_hosp and beds > best_beds))
+            ):
+                best_score = name_score
+                best_candidate = candidate
+                best_dist = dist
+
+        if best_candidate is not None and lid not in matched_ids:
+            results.append(_build_result_row(lid, best_candidate, best_score, "census_spatial", best_dist, cnt_cols))
+            matched_ids.add(lid)
+
+    return results
+
 
 def _write_cms_match_state(
     cms: pd.DataFrame,
@@ -855,7 +1540,7 @@ def _write_cms_match_state(
     out_file = Path(silver_path) / "cms_match_state.parquet"
     state.to_parquet(out_file, index=False)
     print(f"    CMS match state: {(state['match_status'] == 'matched').sum():,} matched, "
-          f"{(state['match_status'] == 'unmatched').sum():,} unmatched → {out_file}")
+          f"{(state['match_status'] == 'unmatched').sum():,} unmatched -> {out_file}")
 
 
 # ---------------------------------------------------------------------------
@@ -870,15 +1555,19 @@ def build_attr_health_cms(
     spatial_name_threshold: float = 0.55,
     addr_name_threshold: float = 0.50,
     name_zip_threshold: float = 0.75,
+    census_distance_m: float = 500.0,
+    census_name_threshold: float = 0.70,
 ) -> pd.DataFrame:
     """
     Match CMS hospital providers to silver health POIs and return a
     ``lifeline_id``-keyed attribute DataFrame ready to write as
     ``silver/attr_health_cms.parquet``.
 
-    Uses a three-tier strategy:
+    Uses a five-tier strategy:
     * **Tier 1** — BallTree spatial match on CMS ``geocoded_lat/lon`` within
       ``spatial_distance_m`` metres, guarded by ``spatial_name_threshold``.
+      Queries up to k=10 nearest providers; tie-breaks by hospital category
+      (``PRVDR_CTGRY_CD == "01"``) then bed count.
     * **Tier 2** — state + ZIP (or ZIP-only) + rapidfuzz name match for
       unmatched POIs, minimum score ``threshold``.  Requires addr fields from
       ``silver/attr_health.parquet``; these are merged in automatically.
@@ -887,6 +1576,13 @@ def build_attr_health_cms(
       House numbers are extracted from ``addr:housenumber`` (OSM tag), falling
       back to parsing the ``display_name`` field for POIs where that tag is
       absent (common in OSM data for PR).
+    * **Tier 4** — ZIP + ``token_set_ratio`` name catch-all (``name_zip_threshold``).
+    * **Tier 5** — Census Batch API geocodes unmatched CMS providers; spatial
+      BallTree (``census_distance_m``) + ``token_set_ratio`` (``census_name_threshold``).
+      Degrades gracefully if the Census API is unreachable.
+
+    Missing US state codes (``_state == ""``) are resolved via pygris Census
+    state boundaries before tier matching begins.
 
     As a side-effect, writes ``silver/cms_match_state.parquet`` — a table of
     all CMS providers tagged as ``"matched"`` or ``"unmatched"`` with the tier,
@@ -909,8 +1605,12 @@ def build_attr_health_cms(
         Minimum fuzzy name score (0–1) for Tier 3 addr_num + ZIP matches.
     name_zip_threshold:
         Minimum ``token_set_ratio`` score (0–1) for Tier 4 ZIP + set-fuzzy
-        name matches (default 0.75).  Lower than Tier 2 and uses
-        ``token_set_ratio`` to handle subset/superset name relationships.
+        name matches (default 0.75).
+    census_distance_m:
+        Spatial search radius in metres for Tier 5 Census-geocoded matches
+        (default 500 m — wider than Tier 1 to account for geocoding error).
+    census_name_threshold:
+        Minimum ``token_set_ratio`` score (0–1) for Tier 5 (default 0.70).
 
     Returns
     -------
@@ -990,6 +1690,9 @@ def build_attr_health_cms(
     _empty_name = health["_name_norm"] == ""
     health.loc[_empty_name, "_name_norm"] = health.loc[_empty_name, "display_name"].apply(_normalize_name)
 
+    # Resolve missing state codes via pygris Census boundaries
+    health = _resolve_missing_states(health)
+
     # --- Load CMS providers ---
     cms = load_cms_providers(bronze_path)
     if len(cms) == 0:
@@ -1019,8 +1722,19 @@ def build_attr_health_cms(
     matched_ids_t3 = matched_ids_t2 | {r["lifeline_id"] for r in tier3_results}
     tier4_results = _tier4_name_zip(health, cms, cnt_cols, matched_ids_t3, name_zip_threshold, cms_already_matched=cms_matched_ids)
     print(f"    CMS Tier 4 (name+zip):  {len(tier4_results):,} matches")
+    cms_matched_ids |= {r["cms_provider_num"] for r in tier4_results if r["cms_provider_num"]}
 
-    all_results = tier1_results + tier2_results + tier3_results + tier4_results
+    # --- Tier 5: Census geocode unmatched CMS + spatial ---
+    matched_ids_t4 = matched_ids_t3 | {r["lifeline_id"] for r in tier4_results}
+    tier5_results = _tier5_census_spatial(
+        health, cms, cnt_cols, matched_ids_t4,
+        census_distance_m=census_distance_m,
+        census_name_threshold=census_name_threshold,
+        cms_already_matched=cms_matched_ids,
+    )
+    print(f"    CMS Tier 5 (census+spatial): {len(tier5_results):,} matches")
+
+    all_results = tier1_results + tier2_results + tier3_results + tier4_results + tier5_results
     if not all_results:
         _write_cms_match_state(cms, pd.DataFrame(), silver_path)
         return pd.DataFrame(columns=_empty_cols)
