@@ -416,7 +416,11 @@ def aggregate_cms_attrs_for_campuses(silver_path: "Path") -> int:
     1. Reads ``campus_buildings.parquet`` to map each collapsed health
        sub-feature to its campus primary ``lifeline_id``.
     2. For each campus primary, collects CMS rows for itself *and* all
-       sub-features, then sums every ``cms_*_cnt`` column across the group.
+       sub-features, **deduplicates by** ``cms_provider_num`` (keeping the
+       highest-score match per provider), then sums every ``cms_*_cnt``
+       column across the de-duplicated group.  This prevents sub-features
+       that all matched the same CMS record from having their bed/staffing
+       counts summed multiple times.
     3. For non-count metadata columns uses the *best* value:
        - ``cms_match_score``      → maximum (most confident match in group)
        - ``cms_match_distance_m`` → minimum (closest geocode hit in group)
@@ -491,6 +495,26 @@ def aggregate_cms_attrs_for_campuses(silver_path: "Path") -> int:
         if len(group) == 0:
             continue  # no CMS data for any member of this campus
 
+        # Capture ALL original group IDs before any dedup — needed to cleanly remove
+        # every sub-feature row (including duplicates) from the output table.
+        _original_group_ids = set(group.index.astype(str).tolist())
+
+        # Dedup by cms_provider_num before summing to avoid counting the same
+        # provider's beds multiple times.  When 3 sub-features all match the
+        # same CMS record (e.g. 187 beds each), sum would produce 3×187=561;
+        # keeping only the best-scoring match per provider gives the correct 187.
+        if "cms_provider_num" in group.columns and len(group) > 1:
+            _prov = group["cms_provider_num"].astype(str).str.strip()
+            _valid_prov = _prov.notna() & (_prov != "") & (_prov.str.lower() != "nan") & (_prov.str.lower() != "none")
+            if _valid_prov.any():
+                _grp = group.copy()
+                if "cms_match_score" in _grp.columns:
+                    _grp["_sort_key"] = _pd.to_numeric(_grp["cms_match_score"], errors="coerce").fillna(0)
+                    _grp = _grp.sort_values("_sort_key", ascending=False).drop(columns=["_sort_key"])
+                _with_prov = _grp[_valid_prov].drop_duplicates(subset=["cms_provider_num"])
+                _without_prov = _grp[~_valid_prov]
+                group = _pd.concat([_with_prov, _without_prov])
+
         row: dict = {"lifeline_id": primary_id}
 
         # Sum all _cnt columns (null-safe)
@@ -526,7 +550,7 @@ def aggregate_cms_attrs_for_campuses(silver_path: "Path") -> int:
             row["cms_match_distance_m"] = None
 
         new_rows.append(row)
-        rows_to_remove.update(group.index.astype(str).tolist())
+        rows_to_remove.update(_original_group_ids)  # remove all original IDs, not just deduped
         updated += 1
 
     if not new_rows:
