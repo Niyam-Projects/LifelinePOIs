@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  lifeline-pipeline:
+    build: .
+    image: lifeline-pipeline:latest
+    volumes:
+      - "/Volumes/X10 Pro/lifelinepois/data:/app/data"
+      - "/Volumes/X10 Pro/lifelinepois/input:/app/input"
+      - "./config.lifeline.yaml:/app/config.lifeline.yaml"
+    entrypoint: ["python"]
+    command: ["run_pipeline.py", "--area", "puerto-rico"]

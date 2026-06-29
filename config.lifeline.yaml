@@ -11,22 +11,22 @@
 # ---------------------------------------------------------------------------
 areas:
   - name: "puerto-rico"
-    pbf_path: "E:\\lifelinepois\\input\\puerto-rico-260521.osm.pbf"
+    pbf_path: "/Volumes/X10 Pro/lifelinepois/input/puerto-rico-260521.osm.pbf"
     bbox: [-67.3, 17.9, -65.2, 18.6]
     state_codes: ["PR"]
 
   - name: "us-virgin-islands"
-    pbf_path: "E:\\lifelinepois\\input\\us-virgin-islands-260521.osm.pbf"
+    pbf_path: "/Volumes/X10 Pro/lifelinepois/input/us-virgin-islands-260521.osm.pbf"
     bbox: [-65.1, 17.6, -64.5, 18.5]
     state_codes: ["VI"]
 
   - name: "florida"
-    pbf_path: "E:\\lifelinepois\\input\\florida-260521.osm.pbf"
+    pbf_path: "/Volumes/X10 Pro/lifelinepois/input/florida-260521.osm.pbf"
     bbox: [-87.7, 24.4, -79.9, 31.0]
     state_codes: ["FL"]
 
   - name: "pacific-territories"
-    pbf_path: "E:\\lifelinepois\\input\\american-oceania-260521.osm.pbf"
+    pbf_path: "/Volumes/X10 Pro/lifelinepois/input/american-oceania-260521.osm.pbf"
     bbox: null                                               # Non-contiguous islands; no bbox clipping
     state_codes: ["MP", "GU", "AS"]
 
@@ -46,7 +46,7 @@ duckdb:
   memory_limit: "16GB"                    # Increase for larger PBF files
 
 storage:
-  root: "E:/lifelinepois/data"    # all sub-paths below are relative to root
+  root: "/Volumes/X10 Pro/lifelinepois/data"    # all sub-paths below are relative to root
   bronze_path: "bronze"
   silver_path: "silver"
   gold_path: "gold"
@@ -137,9 +137,6 @@ campus_collapse:
         - kindergarten
 
 epa_naics:
-  # EPA FRS NAICS/SIC → FEMA Lifeline confidence boost + new POI minting.
-  # Pass 1: tight spatial match against existing silver points (same threshold as HIFLD).
-  # Pass 2: re-geocode unmatched records, check displacement, match or mint new POIs.
   enabled: true
   pass1_match_distance_m: 50.0      # tight BallTree match — follows HIFLD pattern
   pass2_match_distance_m: 100.0     # re-geocoded point match (building-level placement)
@@ -148,7 +145,7 @@ epa_naics:
   boost_tier2: 0.15                 # high-value infrastructure (pipelines, telecom lines, pharmacies)
   boost_tier3: 0.05                 # supporting infrastructure (gas extraction, freight depots)
   mint_new_pois: true               # create new silver POIs for unmatched FRS lifeline records
-  geocode_address_path: "E:/lifelinepois/data/bronze/overture/addresses"        # path to Overture address parquet partition root (null = skip Pass 2 re-geocode)
+  geocode_address_path: "/Volumes/X10 Pro/lifelinepois/data/bronze/overture/addresses"        # path to Overture address parquet partition root (null = skip Pass 2 re-geocode)
 
 cms:
   # CMS Hospital & Non-Hospital Provider Info — authoritative bed counts + provider attributes.
@@ -165,7 +162,7 @@ cms:
   spatial_name_threshold: 0.55      # min fuzzy score to accept a spatial match (0–1)
   # Overture address geocoding — set to your address parquet root to add coordinates.
   # Recommended: reuse the same path as epa_naics.geocode_address_path.
-  geocode_address_path: null        # e.g. "E:/lifelinepois/data/bronze/overture/addresses"
+  geocode_address_path: "/Volumes/X10 Pro/lifelinepois/data/bronze/overture/addresses"        # e.g. "E:/lifelinepois/data/bronze/overture/addresses"
   geocode_min_score: 0.80           # minimum jaro_winkler street-name score to accept
   geocode_provider_categories:      # PRVDR_CTGRY_CD values to geocode; null = all records
     - "01"                          # "01" = general/acute-care hospitals only

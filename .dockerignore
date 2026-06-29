@@ -1,0 +1,18 @@
+# Ignore git and local environment files
+.git
+.env*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore local data and input files - these should be mounted via volumes
+data/
+input/
+
+# Ignore IDE settings
+.vscode/
+.idea/
+
+# Ignore session state from Copilot
+.copilot/

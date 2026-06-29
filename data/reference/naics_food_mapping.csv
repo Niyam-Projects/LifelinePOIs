@@ -1,0 +1,13 @@
+code_type,code,fema_id,lifeline_component,lifeline_subcomponent,lifeline_category,tier,boost,naics_sector,bls_title
+naics,493120,food_hydration_shelter,Food,food,Commercial Food Distribution,2,0.15,48,Refrigerated Warehousing and Storage
+naics,311211,food_hydration_shelter,Food,food,Commercial Food Distribution,1,0.25,31,Dog and Cat Food Manufacturing
+naics,311220,food_hydration_shelter,Food,food,Commercial Food Distribution,1,0.25,31,Dog and Cat Food Manufacturing
+naics,311511,food_hydration_shelter,Food,food,Commercial Food Distribution,1,0.25,31,Dairy Product Manufacturing
+naics,311512,food_hydration_shelter,Food,food,Commercial Food Distribution,1,0.25,31,Dairy Product Manufacturing
+naics,311999,food_hydration_shelter,Food,food,Commercial Food Distribution,2,0.15,31,All Other Miscellaneous Food Manufacturing
+naics,325199,food_hydration_shelter,Food,food,Commercial Food Distribution,2,0.15,31,All Other Basic Organic Chemical Manufacturing
+naics,424480,food_hydration_shelter,Food,food,Commercial Food Distribution,2,0.15,42,Dairy Product Merchant Wholesalers
+naics,424490,food_hydration_shelter,Food,food,Commercial Food Distribution,2,0.15,42,Other Grocery and Related Products Merchant Wholesalers
+naics,311611,food_hydration_shelter,Food,food,Commercial Food Distribution,1,0.25,31,Meat Processing
+naics,311612,food_hydration_shelter,Food,food,Commercial Food Distribution,1,0.25,31,Meat Processing
+naics,445110,food_hydration_shelter,Food,food,Commercial Food Distribution,2,0.15,44,Supermarkets and Other Grocery Stores

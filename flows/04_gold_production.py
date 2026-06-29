@@ -89,7 +89,11 @@ def _(FlowParams, is_script_mode, mo, params_form):
         mo.callout(mo.md("**Fill in the parameters above and click _Run Gold Production_ to start.**"), kind="info"),
     )
     if is_script_mode:
-        flow_params = FlowParams(**{k.replace("-", "_"): v for k, v in mo.cli_args().items()})
+        args = mo.cli_args()
+        if hasattr(args, "items"):
+            flow_params = FlowParams(**{k.replace("-", "_"): v for k, v in args.items()})
+        else:
+            flow_params = FlowParams(**vars(args))
     else:
         flow_params = FlowParams(**params_form.value)
     return (flow_params,)
@@ -183,6 +187,17 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
         print(f"  Producing gold layer: {_layer}")
         ok = _produce_gold_layer(_layer, silver_path, gold_path)
         results.append((_layer, ok))
+
+    # --- Food Gold Layer Production ---
+    print(f"  Producing food gold layer: wide_food")
+    from lib.food_enrichment import produce_food_gold
+    try:
+        food_rows = produce_food_gold(silver_path, gold_path, Path("data/reference/naics_food_mapping.csv"))
+        results.append(("wide_food", food_rows > 0))
+        print(f"    wide_food.parquet — {food_rows:,} rows written")
+    except Exception as e:
+        print(f"    wide_food.parquet — FAILED: {e}")
+        results.append(("wide_food", False))
 
     gold_result = mo.callout(
         mo.md("✅ **Gold production complete.** " + "  ".join(

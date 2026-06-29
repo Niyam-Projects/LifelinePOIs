@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import yaml
 from pathlib import Path
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -97,6 +98,11 @@ class StorageConfig:
     tiles_path: str = "tiles"
 
     def __post_init__(self) -> None:
+        # Override root via environment variable if present
+        env_root = os.environ.get("LIFELINE_STORAGE_ROOT")
+        if env_root:
+            self.root = env_root
+
         if self.root:
             _root = Path(self.root)
             for attr in ("bronze_path", "silver_path", "gold_path", "tiles_path"):
@@ -375,10 +381,19 @@ class LifelineConfig:
         # Backward compat: if no areas but osm.pbf_path is set, wrap into one area.
         areas: list[AreaConfig] = []
         areas_raw = raw.get("areas", []) or []
+        
+        # Resolve PBF directory override from environment
+        pbf_dir = os.environ.get("LIFELINE_PBF_DIR")
+        
         for a in areas_raw:
+            pbf_path = a.get("pbf_path", "")
+            # If pbf_dir is set and pbf_path is relative, join them
+            if pbf_dir and pbf_path and not Path(pbf_path).is_absolute():
+                pbf_path = str(Path(pbf_dir) / pbf_path)
+                
             areas.append(AreaConfig(
                 name=a.get("name", "default"),
-                pbf_path=a.get("pbf_path", ""),
+                pbf_path=pbf_path,
                 bbox=a.get("bbox"),
                 state_codes=a.get("state_codes", []),
             ))
@@ -388,9 +403,15 @@ class LifelineConfig:
         # If no areas defined but legacy pbf_path is present, create one area.
         if not areas and osm_raw.get("pbf_path"):
             aoi_bbox = (raw.get("aoi") or {}).get("bbox")
+            pbf_path = osm_raw["pbf_path"]
+            # Resolve PBF directory override from environment
+            pbf_dir = os.environ.get("LIFELINE_PBF_DIR")
+            if pbf_dir and pbf_path and not Path(pbf_path).is_absolute():
+                pbf_path = str(Path(pbf_dir) / pbf_path)
+                
             areas.append(AreaConfig(
                 name="default",
-                pbf_path=osm_raw["pbf_path"],
+                pbf_path=pbf_path,
                 bbox=aoi_bbox,
                 state_codes=[],
             ))

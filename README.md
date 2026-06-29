@@ -2,18 +2,26 @@
 
 A data pipeline for conflating FEMA Lifeline infrastructure POIs from OpenStreetMap (PBF), EIA Form 860/923, and EPA FRS into cloud-native GeoParquet and PMTiles.
 
-## Quick Start
+## Dockerized Execution
 
+The pipeline can be run containerized using Podman or Docker. This ensures all dependencies are correctly managed and environment consistency is maintained.
+
+### 1. Configuration
+Ensure your `config.lifeline.yaml` is updated with the correct absolute paths for your data and input files on your host machine.
+
+### 2. Build the Image
+Build the container image using `podman-compose`:
 ```bash
-# Install dependencies
-uv sync
-
-# Edit config to set your PBF path
-nano config.lifeline.yaml  # set osm.pbf_path
-
-# Run the full pipeline
-just run-all
+podman compose build
 ```
+
+### 3. Run the Pipeline
+Run the full pipeline for a specific area (e.g., `puerto-rico`) using `podman-compose`:
+```bash
+podman compose up
+```
+
+The container mounts your local `data` and `input` directories, along with the configuration file, to ensure persistent storage and access to regional PBF files.
 
 ## OSM PBF Source
 
