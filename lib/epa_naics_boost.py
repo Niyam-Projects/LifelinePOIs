@@ -90,6 +90,7 @@ def _haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 def load_epa_frs_filtered(
     bronze_path: Path | str,
     bbox: Optional[list[float]] = None,
+    state_codes: Optional[list[str]] = None,
 ) -> gpd.GeoDataFrame:
     """
     Load the EPA FRS national parquet, keep only rows whose NAICS or SIC codes
@@ -97,8 +98,12 @@ def load_epa_frs_filtered(
     GeoDataFrame in EPSG:4326.
 
     Args:
-        bronze_path: root bronze storage directory (contains epa/frs_national.parquet)
-        bbox:        optional [min_lon, min_lat, max_lon, max_lat] filter
+        bronze_path:  root bronze storage directory (contains epa/frs_national.parquet)
+        bbox:         optional [min_lon, min_lat, max_lon, max_lat] — applied as
+                      a fast pre-filter before the state boundary intersection
+        state_codes:  optional list of state abbreviations (e.g. ["PR"]) used to
+                      load a high-resolution TIGER state boundary via pygris and
+                      do a precise intersection filter after the bbox pre-filter
 
     Returns:
         GeoDataFrame with columns: REGISTRY_ID, PRIMARY_NAME, LOCATION_ADDRESS,
@@ -145,7 +150,11 @@ def load_epa_frs_filtered(
 
     gdf = gdf[gdf.geometry.notna()].copy()
 
-    if bbox is not None:
+    if state_codes:
+        # Two-step: bbox pre-filter → precise state boundary intersection via pygris
+        from lib.spatial import clip_to_state_boundary
+        gdf = clip_to_state_boundary(gdf, state_codes, bbox=bbox)
+    elif bbox is not None:
         from lib.spatial import clip_to_bbox
         gdf = clip_to_bbox(gdf, bbox)
 
@@ -541,6 +550,7 @@ def run_epa_naics_pipeline(
     naics_cfg: object,
     conflation_weights: dict,
     bbox: Optional[list[float]] = None,
+    state_codes: Optional[list[str]] = None,
 ) -> tuple[gpd.GeoDataFrame, dict]:
     """
     Full two-pass EPA NAICS pipeline.
@@ -559,8 +569,8 @@ def run_epa_naics_pipeline(
         "total_minted": 0,
     }
 
-    # Load FRS filtered to lifeline codes
-    frs_gdf = load_epa_frs_filtered(bronze_path, bbox)
+    # Load FRS filtered to lifeline codes — bbox pre-filter + state boundary intersection
+    frs_gdf = load_epa_frs_filtered(bronze_path, bbox, state_codes)
     if len(frs_gdf) == 0:
         print("  EPA NAICS: no lifeline-coded FRS records found.")
         return silver_gdf, stats

@@ -750,6 +750,7 @@ def _(cfg, mo):
 
         _master = _gpd.read_parquet(_silver_pts)
         _bbox = cfg.aoi.bbox if hasattr(cfg, "aoi") and cfg.aoi else None
+        _state_codes = cfg.aoi.state_codes if hasattr(cfg, "aoi") and cfg.aoi else []
         _weights = cfg.conflation.confidence_weights
 
         _master, _stats = run_epa_naics_pipeline(
@@ -758,6 +759,7 @@ def _(cfg, mo):
             naics_cfg=_naics_cfg,
             conflation_weights=_weights,
             bbox=_bbox,
+            state_codes=_state_codes,
         )
         _master.to_parquet(_silver_pts, index=False)
 

@@ -169,6 +169,11 @@ def _(Path, cfg, flow_params, gpd, mo, pd):
         # Drop all tmp_ cols (tmp_osm_layer and any others)
         _tmp_cols = [c for c in wide.columns if c.startswith("tmp_")]
         wide = wide.drop(columns=_tmp_cols, errors="ignore")
+        # Sort by H3 index (Hilbert-like spatial ordering) for DuckDB row-group
+        # pruning — spatially adjacent records land in the same row groups,
+        # making bbox filter pushdown significantly faster on large parquet files.
+        if "h3_index" in wide.columns:
+            wide = wide.sort_values("h3_index", na_position="last").reset_index(drop=True)
         gold_path.mkdir(parents=True, exist_ok=True)
         out_path = gold_path / f"wide_{layer}.parquet"
         if isinstance(wide, gpd.GeoDataFrame):

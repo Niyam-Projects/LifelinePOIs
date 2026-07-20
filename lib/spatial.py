@@ -1,5 +1,5 @@
 """
-Spatial utilities for LifelinePOI: H3 indexing and AOI clipping.
+Spatial utilities for LifelinePOI: H3 indexing, AOI clipping, and state boundary filtering.
 """
 from __future__ import annotations
 
@@ -56,6 +56,121 @@ def clip_to_bbox(
     min_lon, min_lat, max_lon, max_lat = bbox
     clip_geom = box(min_lon, min_lat, max_lon, max_lat)
     return gdf.clip(clip_geom)
+
+
+def load_state_boundary(
+    state_codes: list[str],
+    bbox: list[float] | None = None,
+    cache_dir: str | None = None,
+) -> gpd.GeoDataFrame | None:
+    """
+    Load high-resolution state/territory boundaries using pygris.
+
+    Strategy: bbox pre-filter first (fast), then return the dissolved union
+    polygon for precise intersection filtering of national datasets.
+
+    Args:
+        state_codes: List of FIPS-compatible state abbreviations (e.g. ["PR"]).
+        bbox:        Optional [min_lon, min_lat, max_lon, max_lat] for a fast
+                     pre-filter before fetching the boundary.
+        cache_dir:   Directory to cache downloaded TIGER shapefiles.
+                     Defaults to pygris default (~/.cache/pygris).
+
+    Returns:
+        GeoDataFrame with a single-row dissolved boundary in EPSG:4326,
+        or None if pygris is unavailable or the state cannot be found.
+    """
+    try:
+        import pygris
+    except ImportError:
+        return None
+
+    if not state_codes:
+        return None
+
+    kwargs: dict = {"year": 2023, "cb": True}  # cb=True = cartographic (smaller, faster)
+    if cache_dir:
+        kwargs["cache"] = True
+
+    try:
+        parts = []
+        for code in state_codes:
+            try:
+                boundary = pygris.states(state=code, **kwargs)
+                parts.append(boundary)
+            except Exception:
+                # Territory codes (VI, GU, AS, MP) may need the territories layer
+                try:
+                    boundary = pygris.states(state=code, year=2023, cb=False)
+                    parts.append(boundary)
+                except Exception:
+                    pass
+
+        if not parts:
+            return None
+
+        import pandas as _pd
+        combined = gpd.GeoDataFrame(
+            _pd.concat(parts, ignore_index=True), crs=parts[0].crs
+        ).to_crs("EPSG:4326")
+
+        # Dissolve to a single polygon union
+        dissolved = combined.dissolve().reset_index(drop=True)[["geometry"]]
+        return dissolved
+
+    except Exception:
+        return None
+
+
+def clip_to_state_boundary(
+    gdf: gpd.GeoDataFrame,
+    state_codes: list[str],
+    bbox: list[float] | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Filter a GeoDataFrame to records that intersect the actual state boundary.
+
+    Two-step approach for performance:
+      1. bbox pre-filter (fast index scan, eliminates most out-of-area records)
+      2. precise polygon intersection with high-res TIGER state boundary
+
+    Falls back to bbox-only if pygris is unavailable or the boundary cannot
+    be loaded.
+
+    Args:
+        gdf:         Input GeoDataFrame in EPSG:4326.
+        state_codes: State/territory abbreviations (e.g. ["PR"]).
+        bbox:        Bounding box [min_lon, min_lat, max_lon, max_lat].
+
+    Returns:
+        Filtered GeoDataFrame (same CRS as input).
+    """
+    if gdf is None or len(gdf) == 0:
+        return gdf
+
+    # Step 1: fast bbox pre-filter
+    if bbox is not None:
+        gdf = clip_to_bbox(gdf, bbox)
+        if len(gdf) == 0:
+            return gdf
+
+    # Step 2: precise state boundary intersection
+    boundary = load_state_boundary(state_codes, bbox=bbox)
+    if boundary is None or len(boundary) == 0:
+        print(f"  [spatial] pygris boundary unavailable for {state_codes} — using bbox only")
+        return gdf
+
+    try:
+        state_union = boundary.geometry.unary_union
+        mask = gdf.geometry.intersects(state_union)
+        filtered = gdf[mask].copy()
+        n_removed = len(gdf) - len(filtered)
+        if n_removed > 0:
+            print(f"  [spatial] State boundary filter removed {n_removed:,} out-of-boundary records")
+        return filtered
+    except Exception as e:
+        print(f"  [spatial] State boundary intersection failed ({e}) — using bbox only")
+        return gdf
 
 
 def nearest_neighbor_join(
