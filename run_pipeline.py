@@ -1,6 +1,7 @@
 import subprocess
 import argparse
 import sys
+import os
 import yaml
 from pathlib import Path
 
@@ -55,6 +56,11 @@ def main():
     
     print(f"Starting pipeline for area: {args.area}")
 
+    # Build env with LIFELINE_AREA_NAME so that LifelineConfig.from_yaml()
+    # populates cfg.aoi — enabling bbox + state_code filtering of national
+    # datasets (EPA FRS, HIFLD, CMS) in silver conflation.
+    area_env = {**os.environ, "LIFELINE_AREA_NAME": args.area}
+
     # 1. Setup (Overture addresses)
     run_command(["uv", "run", "python", "flows/00_setup.py", "--region", args.area])
 
@@ -62,16 +68,16 @@ def main():
     run_command(["uv", "run", "python", "flows/01_ingest.py", "--area", args.area])
 
     # 3. Silver Conflation
-    run_command(["uv", "run", "python", "flows/02_silver_conflation.py"])
+    run_command(["uv", "run", "python", "flows/02_silver_conflation.py"], env=area_env)
 
     # 4. Campus Collapse
-    run_command(["uv", "run", "python", "flows/02b_campus_collapse.py"])
+    run_command(["uv", "run", "python", "flows/02b_campus_collapse.py"], env=area_env)
 
     # 5. GERSite Bridge
-    run_command(["uv", "run", "python", "flows/03_gersite_bridge.py"])
+    run_command(["uv", "run", "python", "flows/03_gersite_bridge.py"], env=area_env)
 
     # 6. Gold Production
-    run_command(["uv", "run", "python", "flows/04_gold_production.py"])
+    run_command(["uv", "run", "python", "flows/04_gold_production.py"], env=area_env)
 
     print(f"\n[SUCCESS] Pipeline completed successfully for {args.area}")
 

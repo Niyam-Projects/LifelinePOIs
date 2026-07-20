@@ -370,6 +370,11 @@ class LifelineConfig:
     cms: CmsConfig = field(default_factory=CmsConfig)
     areas: list[AreaConfig] = field(default_factory=list)
     overture: OvertureConfig = field(default_factory=OvertureConfig)
+    # Active area for this run — populated from LIFELINE_AREA_NAME env var.
+    # When set, cfg.aoi.bbox and cfg.aoi.state_codes are used by silver
+    # conflation to clip national datasets (EPA FRS, HIFLD, etc.) to the
+    # target geography, avoiding bleed-through from other states.
+    aoi: Optional[AreaConfig] = None
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.lifeline.yaml") -> "LifelineConfig":
@@ -465,7 +470,22 @@ class LifelineConfig:
         cms_raw = raw.get("cms", {})
         cms = CmsConfig(**{k: v for k, v in cms_raw.items() if k in CmsConfig.__dataclass_fields__})
         return cls(osm=osm, duckdb=duckdb, storage=storage, eia=eia, epa=epa,
+        # Resolve active area for this run from LIFELINE_AREA_NAME env var.
+        # This populates cfg.aoi so that silver conflation can clip national
+        # datasets (EPA FRS, HIFLD, CMS) to the target bbox + state_codes.
+        area_name_env = os.environ.get("LIFELINE_AREA_NAME", "").strip()
+        aoi: Optional[AreaConfig] = None
+        if area_name_env and areas:
+            aoi = next((a for a in areas if a.name == area_name_env), None)
+            if aoi is None:
+                import warnings
+                warnings.warn(
+                    f"LIFELINE_AREA_NAME='{area_name_env}' not found in config areas. "
+                    f"Available: {[a.name for a in areas]}. Skipping bbox filter."
+                )
+
+        return cls(osm=osm, duckdb=duckdb, storage=storage, eia=eia, epa=epa,
                    echo=echo, sdwis=sdwis, fcc=fcc, irs=irs, eia_api=eia_api,
                    conflation=conflation, tiles=tiles, hifld=hifld, epa_naics=epa_naics,
                    campus_collapse=campus_collapse, cms=cms,
-                   areas=areas, overture=overture)
+                   areas=areas, overture=overture, aoi=aoi)
