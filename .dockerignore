@@ -8,6 +8,7 @@ __pycache__/
 
 # Ignore local data and input files - these should be mounted via volumes
 data/
+!data/seed/
 input/
 
 # Ignore IDE settings
