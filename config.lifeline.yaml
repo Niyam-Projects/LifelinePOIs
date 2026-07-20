@@ -46,7 +46,7 @@ duckdb:
   memory_limit: "16GB"                    # Increase for larger PBF files
 
 storage:
-  root: "/Volumes/X10 Pro/lifelinepois/data"    # all sub-paths below are relative to root
+  root: "/app/data"    # all sub-paths below are relative to root
   bronze_path: "bronze"
   silver_path: "silver"
   gold_path: "gold"
@@ -145,7 +145,7 @@ epa_naics:
   boost_tier2: 0.15                 # high-value infrastructure (pipelines, telecom lines, pharmacies)
   boost_tier3: 0.05                 # supporting infrastructure (gas extraction, freight depots)
   mint_new_pois: true               # create new silver POIs for unmatched FRS lifeline records
-  geocode_address_path: "/Volumes/X10 Pro/lifelinepois/data/bronze/overture/addresses"        # path to Overture address parquet partition root (null = skip Pass 2 re-geocode)
+  geocode_address_path: "/app/data/bronze/overture/addresses"        # path to Overture address parquet partition root (null = skip Pass 2 re-geocode)
 
 cms:
   # CMS Hospital & Non-Hospital Provider Info — authoritative bed counts + provider attributes.
@@ -162,7 +162,7 @@ cms:
   spatial_name_threshold: 0.55      # min fuzzy score to accept a spatial match (0–1)
   # Overture address geocoding — set to your address parquet root to add coordinates.
   # Recommended: reuse the same path as epa_naics.geocode_address_path.
-  geocode_address_path: "/Volumes/X10 Pro/lifelinepois/data/bronze/overture/addresses"        # e.g. "E:/lifelinepois/data/bronze/overture/addresses"
+  geocode_address_path: "/app/data/bronze/overture/addresses"        # e.g. "E:/lifelinepois/data/bronze/overture/addresses"
   geocode_min_score: 0.80           # minimum jaro_winkler street-name score to accept
   geocode_provider_categories:      # PRVDR_CTGRY_CD values to geocode; null = all records
     - "01"                          # "01" = general/acute-care hospitals only
