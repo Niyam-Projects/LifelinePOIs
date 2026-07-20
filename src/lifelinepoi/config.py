@@ -469,7 +469,6 @@ class LifelineConfig:
             campus_collapse = CampusCollapseConfig()
         cms_raw = raw.get("cms", {})
         cms = CmsConfig(**{k: v for k, v in cms_raw.items() if k in CmsConfig.__dataclass_fields__})
-        return cls(osm=osm, duckdb=duckdb, storage=storage, eia=eia, epa=epa,
         # Resolve active area for this run from LIFELINE_AREA_NAME env var.
         # This populates cfg.aoi so that silver conflation can clip national
         # datasets (EPA FRS, HIFLD, CMS) to the target bbox + state_codes.
