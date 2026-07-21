@@ -88,7 +88,7 @@ def load_state_boundary(
     if not state_codes:
         return None
 
-    kwargs: dict = {"year": 2023, "cb": True}  # cb=True = cartographic (smaller, faster)
+    kwargs: dict = {"year": 2023, "cb": False}  # cb=False = full-resolution TIGER boundary
     if cache_dir:
         kwargs["cache"] = True
 
@@ -99,9 +99,9 @@ def load_state_boundary(
                 boundary = pygris.states(state=code, **kwargs)
                 parts.append(boundary)
             except Exception:
-                # Territory codes (VI, GU, AS, MP) may need the territories layer
+                # Fallback: cartographic boundary if full-res unavailable
                 try:
-                    boundary = pygris.states(state=code, year=2023, cb=False)
+                    boundary = pygris.states(state=code, year=2023, cb=True)
                     parts.append(boundary)
                 except Exception:
                     pass
