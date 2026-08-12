@@ -55,6 +55,10 @@ def clip_to_bbox(
         return gdf
     min_lon, min_lat, max_lon, max_lat = bbox
     clip_geom = box(min_lon, min_lat, max_lon, max_lat)
+    # Fix invalid geometries (e.g. self-intersections) before clipping
+    if not gdf.geometry.is_valid.all():
+        gdf = gdf.copy()
+        gdf.geometry = gdf.geometry.buffer(0)
     return gdf.clip(clip_geom)
 
 
